@@ -1,4 +1,13 @@
-from fdsrouter.core.out_parser import parse_devc_latest, parse_latest_hrr_kw, parse_out_file, parse_out_text
+import pytest
+
+from fdsrouter.core.out_parser import (
+    parse_devc_devices,
+    parse_devc_latest,
+    parse_devc_series,
+    parse_latest_hrr_kw,
+    parse_out_file,
+    parse_out_text,
+)
 
 
 def test_parses_real_out_file(fixtures_dir):
@@ -62,3 +71,44 @@ def test_parses_latest_devc_readings_from_real_csv(fixtures_dir):
 
 def test_devc_missing_file_returns_empty_dict(tmp_path):
     assert parse_devc_latest(tmp_path / "missing_devc.csv") == {}
+
+
+def test_lists_devc_devices_with_units(fixtures_dir):
+    devices = parse_devc_devices(fixtures_dir / "devc_test_devc.csv")
+
+    # Column 0 ("Time") is the axis, not a device, and must not be offered as one.
+    assert devices == [{"name": "TC_1", "unit": "C"}, {"name": "TC_2", "unit": "C"}]
+
+
+def test_parses_full_devc_series_for_one_device(fixtures_dir):
+    series = parse_devc_series(fixtures_dir / "devc_test_devc.csv", "TC_2")
+
+    assert series.device == "TC_2"
+    assert series.unit == "C"
+    assert series.samples[0] == (0.0, 20.0)
+    assert series.samples[-1] == pytest.approx((0.5, 20.007965))
+    assert len(series.samples) == 4
+
+
+def test_devc_series_rejects_unknown_device_and_the_time_column(fixtures_dir):
+    devc = fixtures_dir / "devc_test_devc.csv"
+
+    assert parse_devc_series(devc, "TC_99") is None
+    assert parse_devc_series(devc, "Time") is None
+
+
+def test_devc_series_missing_file_returns_none(tmp_path):
+    assert parse_devc_series(tmp_path / "missing_devc.csv", "TC_1") is None
+    assert parse_devc_devices(tmp_path / "missing_devc.csv") == []
+
+
+def test_devc_series_is_thinned_but_keeps_the_last_sample(tmp_path):
+    devc = tmp_path / "long_devc.csv"
+    rows = "\n".join(f"{i * 0.5:.4f},{i}" for i in range(500))
+    devc.write_text(f"s,C\nTime,TC_1\n{rows}\n", encoding="utf-8")
+
+    series = parse_devc_series(devc, "TC_1", max_points=100)
+
+    assert len(series.samples) <= 101  # the kept final sample may exceed the cap by one
+    assert series.samples[0] == (0.0, 0.0)
+    assert series.samples[-1] == (249.5, 499.0)

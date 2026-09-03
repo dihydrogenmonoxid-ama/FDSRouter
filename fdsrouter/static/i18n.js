@@ -36,6 +36,7 @@ const STRINGS = {
     liveHrr: "HRR",
     hrrAxisLabel: "HRR (kW)",
     simTimeAxisLabel: "Simulationszeit (s)",
+    plotSignalLabel: "Dargestellte Größe: HRR oder eine Messstelle aus der DEVC-Ausgabe",
 
     startJob: "Start",
     startJobFailed: "Konnte Job nicht starten: {error}",
@@ -159,6 +160,7 @@ const STRINGS = {
     liveHrr: "HRR",
     hrrAxisLabel: "HRR (kW)",
     simTimeAxisLabel: "Simulation time (s)",
+    plotSignalLabel: "Plotted quantity: HRR or a device from the DEVC output",
 
     startJob: "Start",
     startJobFailed: "Could not start job: {error}",

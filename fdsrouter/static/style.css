@@ -479,6 +479,25 @@ button.small { font-size: 11px; padding: 5px 9px; }
   margin-bottom: 4px;
 }
 
+/* Signal picker sitting where the y-axis label goes: the select names the quantity, the
+   chip next to it carries the unit FDS reports for it. */
+.plot-signal { display: inline-flex; align-items: center; gap: 6px; }
+
+.plot-select {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 4px;
+  max-width: 180px;
+  cursor: pointer;
+}
+
+.plot-select:focus { outline: 1px solid var(--data); outline-offset: -1px; }
+#plot-y-unit { color: var(--text-faint); }
+
 .plot canvas {
   display: block;
   width: 100%;

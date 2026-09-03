@@ -11,9 +11,12 @@ partial-block bugs at chunk boundaries, at the cost of re-parsing text we've alr
 from __future__ import annotations
 
 import csv
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+MAX_SERIES_POINTS = 1000  # plot resolution cap for a device history (see parse_devc_series)
 
 # "       Time Step        1   September  3, 2026  15:16:59"
 # "       Step Size:  0.103E+00 s, Total Time:    0.10306 s"
@@ -32,6 +35,13 @@ _COMPLETED_RE = re.compile(r"STOP:\s*FDS completed successfully", re.IGNORECASE)
 # whichever mesh has the highest CFL number for a step is, by convention, the one currently
 # constraining FDS's adaptive timestep the most.
 _LIMITING_MESH_RE = re.compile(r"Maximum CFL Number\s*:\s*[0-9.Ee+-]+\s+on Mesh\s+(\d+)", re.IGNORECASE)
+
+
+@dataclass
+class DevcSeries:
+    device: str
+    unit: str
+    samples: list[tuple[float, float]]  # (simulation time in s, value in `unit`)
 
 
 @dataclass
@@ -107,6 +117,71 @@ def parse_latest_hrr_kw(hrr_csv_path: Path) -> float | None:
         return float(row[hrr_index])
     except (ValueError, IndexError):
         return None
+
+
+def _read_devc_table(devc_csv_path: Path) -> tuple[list[str], list[str], list[list[str]]] | None:
+    """Split CHID_devc.csv into (units row, names row, data rows), or None if unusable."""
+    if not devc_csv_path.exists():
+        return None
+    with devc_csv_path.open(newline="", encoding="utf-8", errors="replace") as f:
+        rows = list(csv.reader(f))
+    if len(rows) < 3:
+        return None
+    return [c.strip() for c in rows[0]], [c.strip() for c in rows[1]], rows[2:]
+
+
+def parse_devc_devices(devc_csv_path: Path) -> list[dict[str, str]]:
+    """Every device in the file as {"name", "unit"}, in column order. Column 0 is always Time
+    and is not a device."""
+    table = _read_devc_table(devc_csv_path)
+    if table is None:
+        return []
+    units, names, _ = table
+    return [
+        {"name": name, "unit": units[i] if i < len(units) else ""}
+        for i, name in enumerate(names)
+        if i > 0 and name
+    ]
+
+
+def parse_devc_series(
+    devc_csv_path: Path, device: str, max_points: int = MAX_SERIES_POINTS
+) -> DevcSeries | None:
+    """The full (simulation time, value) history of one device, thinned to at most max_points.
+
+    FDS writes one row per DT_DEVC output step, so a long case accumulates far more points than
+    a ~600px wide plot can show; striding keeps the payload small, and the last sample is always
+    kept so the curve ends at the most recent reading rather than short of it.
+    """
+    table = _read_devc_table(devc_csv_path)
+    if table is None:
+        return None
+    units, names, data_rows = table
+    if device not in names:
+        return None
+    column = names.index(device)
+    if column == 0:  # the time column itself is not a device
+        return None
+
+    samples: list[tuple[float, float]] = []
+    for row in data_rows:
+        if len(row) <= column:
+            continue
+        try:
+            samples.append((float(row[0]), float(row[column])))
+        except ValueError:
+            continue
+
+    if len(samples) > max_points:
+        stride = math.ceil(len(samples) / max_points)
+        thinned = samples[::stride]
+        if thinned[-1] != samples[-1]:
+            thinned.append(samples[-1])
+        samples = thinned
+
+    return DevcSeries(
+        device=device, unit=units[column] if column < len(units) else "", samples=samples
+    )
 
 
 def parse_devc_latest(devc_csv_path: Path) -> dict[str, float]:

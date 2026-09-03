@@ -3,7 +3,12 @@
 const state = {
   jobs: [],
   runningJobId: null,
-  hrrHistory: [], // [{t: simulation_time_s, kw: total_hrr_kw}]
+  hrrHistory: [], // [{t: simulation_time_s, v: total_hrr_kw}]
+  // Which signal the plot under the running job shows: HRR, or one DEVC device.
+  plotSignal: { kind: "hrr", device: null, unit: "kW" },
+  deviceHistory: [], // [{t: simulation_time_s, v: value}] for plotSignal.device
+  knownDevices: [], // [{name, unit}] from the job's CHID_devc.csv
+  deviceListPending: false,
   lastSimTime: null,
   expandedHistoryIds: new Set(),
   jobMetricsCache: new Map(),
@@ -235,7 +240,7 @@ function onThemeChange(theme) {
   // Canvas pixels don't restyle themselves -- redraw everything that reads theme tokens.
   drawSparkline("cpu-sparkline", state.cpuTotalHistory);
   drawCoreHeatmap();
-  drawHrrChart();
+  drawLivePlot();
 }
 
 async function saveSettings() {
@@ -313,6 +318,120 @@ async function onAutoAdvanceToggle(enabled) {
   }
 }
 
+// ---------- Live plot signal (HRR or a DEVC device) ----------
+
+const HRR_SIGNAL = "hrr";
+
+function plotSignalValue() {
+  return state.plotSignal.kind === "devc" ? `devc:${state.plotSignal.device}` : HRR_SIGNAL;
+}
+
+function plotSignalLabel() {
+  return state.plotSignal.kind === "hrr" ? t("liveHrr") : state.plotSignal.device;
+}
+
+/** Samples currently plotted, oldest first. */
+function plotSeries() {
+  return state.plotSignal.kind === "hrr" ? state.hrrHistory : state.deviceHistory;
+}
+
+/** Rebuild the option list only when the device set actually changed, so the running
+ *  selection survives the 2s metric ticks, and so an open dropdown isn't torn down mid-click. */
+function syncPlotSignalOptions(devices) {
+  const select = el("plot-signal");
+  state.knownDevices = devices;
+  if (!select) return;
+
+  const wanted = plotSignalValue();
+  const values = [HRR_SIGNAL, ...devices.map((d) => `devc:${d.name}`)];
+  const unchanged =
+    select.options.length === values.length &&
+    values.every((value, i) => select.options[i].value === value);
+  if (unchanged) {
+    select.value = wanted;
+    return;
+  }
+
+  select.innerHTML = "";
+  const hrrOption = document.createElement("option");
+  hrrOption.value = HRR_SIGNAL;
+  hrrOption.textContent = t("liveHrr");
+  select.appendChild(hrrOption);
+  for (const device of devices) {
+    const option = document.createElement("option");
+    option.value = `devc:${device.name}`;
+    option.textContent = device.name;
+    select.appendChild(option);
+  }
+
+  // A selected device disappears when a different case starts -- fall back to HRR.
+  if (!values.includes(wanted)) {
+    state.plotSignal = { kind: "hrr", device: null, unit: "kW" };
+    state.deviceHistory = [];
+    updatePlotCaption();
+  }
+  select.value = plotSignalValue();
+}
+
+/** The device list comes from the case's CHID_devc.csv, which also carries each device's unit.
+ *  It is empty until FDS writes its first output step, hence the refresh on device changes
+ *  reported by the live metrics. */
+async function refreshDeviceOptions(jobId) {
+  if (!jobId || state.deviceListPending) return;
+  state.deviceListPending = true;
+  try {
+    const data = await apiGet(`/api/jobs/${jobId}/devices`);
+    if (state.runningJobId === jobId) syncPlotSignalOptions(data.devices || []);
+  } catch (e) {
+    // no devc file yet -- retried on the next tick that reports a different device set
+  } finally {
+    state.deviceListPending = false;
+  }
+}
+
+async function onPlotSignalChange(value) {
+  if (value === HRR_SIGNAL) {
+    state.plotSignal = { kind: "hrr", device: null, unit: "kW" };
+    state.deviceHistory = [];
+    updatePlotCaption();
+    drawLivePlot();
+    return;
+  }
+
+  const device = value.slice("devc:".length);
+  const known = state.knownDevices.find((d) => d.name === device);
+  state.plotSignal = { kind: "devc", device, unit: known ? known.unit : "" };
+  state.deviceHistory = [];
+  updatePlotCaption();
+  drawLivePlot();
+  await loadDeviceSeries(device);
+}
+
+/** Load a device's history from its CHID_devc.csv, so switching signals mid-run shows the
+ *  whole curve instead of only what arrives from here on. */
+async function loadDeviceSeries(device) {
+  const jobId = state.runningJobId;
+  if (!jobId) return;
+  try {
+    const data = await apiGet(
+      `/api/jobs/${jobId}/devices/series?device=${encodeURIComponent(device)}`
+    );
+    // A slower request for a signal the user has already switched away from must not win.
+    if (state.plotSignal.kind !== "devc" || state.plotSignal.device !== device) return;
+    state.plotSignal.unit = data.unit || "";
+    state.deviceHistory = data.samples.map(([time, value]) => ({ t: time, v: value }));
+  } catch (e) {
+    // No devc file yet (FDS has not reached its first output step) -- the live ticks below
+    // will fill the curve from now on.
+  }
+  updatePlotCaption();
+  drawLivePlot();
+}
+
+function updatePlotCaption() {
+  setText("plot-y-unit", state.plotSignal.unit || "");
+}
+
 // ---------- Queue rendering ----------
 
 function fmtDuration(seconds) {
@@ -354,7 +473,7 @@ function renderJobs() {
   } else {
     queued.forEach((job, i) => queueList.appendChild(renderQueuedCard(job, !running && i === 0, i + 1)));
   }
-  if (running) drawHrrChart();
+  if (running) drawLivePlot();
 
   const historyList = el("history-list");
   historyList.innerHTML = "";
@@ -397,7 +516,13 @@ function renderRunningCard(job) {
       </div>
     </div>
     <div class="plot">
-      <div class="plot-caption"><span>${t("hrrAxisLabel")}</span><span>${t("simTimeAxisLabel")}</span></div>
+      <div class="plot-caption">
+        <span class="plot-signal">
+          <select id="plot-signal" class="plot-select" title="${t("plotSignalLabel")}"></select>
+          <span id="plot-y-unit">${esc(state.plotSignal.unit)}</span>
+        </span>
+        <span>${t("simTimeAxisLabel")}</span>
+      </div>
       <canvas id="hrr-canvas"></canvas>
     </div>
     <div class="job-actions">
@@ -413,6 +538,11 @@ function renderRunningCard(job) {
     }
   };
   li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
+
+  // The card is rebuilt on every queue update, so the select is repopulated from state here.
+  const select = li.querySelector("#plot-signal");
+  select.addEventListener("change", (ev) => onPlotSignalChange(ev.target.value));
+  syncPlotSignalOptions(state.knownDevices);
 
   return li;
 }
@@ -611,6 +741,7 @@ function handleJobMetrics(msg) {
   const devices = msg.devices || {};
   const devcTbody = el("devc-tbody");
   const deviceNames = Object.keys(devices);
+  if (deviceNames.length !== state.knownDevices.length) refreshDeviceOptions(msg.job_id);
   devcTbody.innerHTML = deviceNames.length
     ? deviceNames
         .map((name) => `<tr><td>${esc(name)}</td><td class="n">${devices[name].toFixed(1)}</td></tr>`)
@@ -625,15 +756,35 @@ function handleJobMetrics(msg) {
       msg.out.limiting_mesh != null ? t("limitingMeshValue", { mesh: msg.out.limiting_mesh }) : t("unknownValue")
     );
 
-    if (msg.out.simulation_time_s != null && msg.out.total_hrr_kw != null) {
-      state.hrrHistory.push({ t: msg.out.simulation_time_s, kw: msg.out.total_hrr_kw });
-      if (state.hrrHistory.length > 500) state.hrrHistory.shift();
-      drawHrrChart();
+    const simTime = msg.out.simulation_time_s;
+    if (simTime != null && msg.out.total_hrr_kw != null) {
+      appendSample(state.hrrHistory, simTime, msg.out.total_hrr_kw);
     }
+    // The selected device's live value rides along on the same tick as the .out values, so
+    // both curves stay on one simulation-time axis.
+    const signal = state.plotSignal;
+    if (signal.kind === "devc" && simTime != null && devices[signal.device] != null) {
+      appendSample(state.deviceHistory, simTime, devices[signal.device]);
+    }
+    drawLivePlot();
 
     state.lastSimTime = msg.out.simulation_time_s;
     updateProgress(msg.out.simulation_time_s);
   }
+}
+
+const MAX_PLOT_SAMPLES = 2000;
+
+/** Append a sample, replacing the last one when simulation time has not advanced -- FDS polls
+ *  faster than it writes output, so otherwise the curve piles up points on the same x. */
+function appendSample(series, time, value) {
+  const last = series[series.length - 1];
+  if (last && Math.abs(last.t - time) < 1e-9) {
+    last.v = value;
+    return;
+  }
+  series.push({ t: time, v: value });
+  if (series.length > MAX_PLOT_SAMPLES) series.shift();
 }
 
 function updateProgress(simTime) {
@@ -787,27 +938,41 @@ function drawCoreHeatmap() {
   });
 }
 
-/** Round a range up to ticks at 1/2/5 x 10^n, the way a plotted axis is normally scaled. */
-function niceAxisTicks(maxValue, count) {
-  if (!isFinite(maxValue) || maxValue <= 0) return { ticks: [0], max: 1 };
-  const rawStep = maxValue / count;
+/** Scale [lo, hi] to ticks at 1/2/5 x 10^n, the way a plotted axis is normally scaled.
+ *  Works for ranges that do not start at zero -- a thermocouple sits at ambient, not at 0. */
+function niceAxisRange(lo, hi, count, exactBounds = false) {
+  if (!isFinite(lo) || !isFinite(hi)) return { ticks: [0, 1], min: 0, max: 1, step: 1 };
+  if (hi - lo < 1e-9) hi = lo + Math.max(Math.abs(lo) * 0.1, 1);
+  const rawStep = (hi - lo) / count;
   const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
   const normalized = rawStep / magnitude;
   const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
+  // exactBounds keeps the given range and only puts the ticks on nice values -- used for the
+  // time axis, which has to end exactly at T_END so the plot matches the progress gauge.
+  const min = exactBounds ? lo : Math.floor(lo / step) * step;
+  const max = exactBounds ? hi : Math.ceil(hi / step) * step;
   const ticks = [];
-  for (let value = 0; value <= maxValue + step / 2; value += step) ticks.push(value);
-  return { ticks, max: ticks[ticks.length - 1] };
+  // Indexed rather than accumulated, so the ticks don't drift on non-integer steps.
+  // Tolerance only absorbs float noise (step * 1e-6); a half-step would admit a whole extra
+  // tick beyond the axis, which is what put a "1000" label on a 900 s axis.
+  const tolerance = step * 1e-6;
+  for (let i = Math.ceil(min / step - 1e-6); i * step <= max + tolerance; i++) {
+    ticks.push(i * step);
+  }
+  if (!ticks.length) ticks.push(min, max);
+  return { ticks, min, max, step };
 }
 
-function formatTick(value) {
-  if (value === 0) return "0";
+/** Tick labels share the decimal count implied by the step, so an axis reads 0.9/1.0/1.1
+ *  instead of rounding three distinct ticks to the same "1". */
+function formatTick(value, step) {
   const abs = Math.abs(value);
   if (abs >= 1e6) return value.toExponential(0).replace("e+", "e");
-  if (abs < 1) return value.toFixed(2);
-  return String(Math.round(value));
+  const decimals = step >= 1 ? 0 : Math.min(6, Math.ceil(-Math.log10(step)));
+  return value.toFixed(decimals);
 }
 
-function drawHrrChart() {
+function drawLivePlot() {
   const canvas = el("hrr-canvas");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
@@ -815,14 +980,24 @@ function drawHrrChart() {
   const h = (canvas.height = canvas.clientHeight || 120);
   ctx.clearRect(0, 0, w, h);
 
-  const data = state.hrrHistory.slice();
-  if (data.length === 0 || data[0].t > 0.001) data.unshift({ t: 0, kw: 0 });
+  const data = plotSeries().slice();
+  // HRR starts at zero by definition, so the curve is anchored there; a device reading has no
+  // such baseline and is plotted only over the samples that actually exist.
+  if (state.plotSignal.kind === "hrr" && (data.length === 0 || data[0].t > 0.001)) {
+    data.unshift({ t: 0, v: 0 });
+  }
+  if (data.length === 0) return;
 
   const job = currentRunningJob();
   // Fixed x-axis at T_END where the case declares one: the curve then grows across a stable
   // axis instead of the axis rescaling under it on every sample.
-  const xAxis = niceAxisTicks((job && job.sim_end_time_s) || data[data.length - 1].t || 1, 5);
-  const yAxis = niceAxisTicks(Math.max(...data.map((d) => d.kw), 1), 4);
+  const xAxis = niceAxisRange(0, (job && job.sim_end_time_s) || data[data.length - 1].t || 1, 5, true);
+  const values = data.map((d) => d.v);
+  const yAxis = niceAxisRange(
+    state.plotSignal.kind === "hrr" ? 0 : Math.min(...values),
+    Math.max(...values),
+    4
+  );
 
   const padLeft = 42;
   const padBottom = 15;
@@ -832,8 +1007,10 @@ function drawHrrChart() {
   const plotH = h - padTop - padBottom;
   if (plotW <= 0 || plotH <= 0) return;
 
-  const xOf = (value) => padLeft + (Math.min(value, xAxis.max) / xAxis.max) * plotW;
-  const yOf = (value) => padTop + plotH - (Math.min(value, yAxis.max) / yAxis.max) * plotH;
+  const span = (axis) => axis.max - axis.min || 1;
+  const clamp = (value, axis) => Math.min(Math.max(value, axis.min), axis.max);
+  const xOf = (value) => padLeft + ((clamp(value, xAxis) - xAxis.min) / span(xAxis)) * plotW;
+  const yOf = (value) => padTop + plotH - ((clamp(value, yAxis) - yAxis.min) / span(yAxis)) * plotH;
 
   const line = token("--line", "#232a37");
   const faint = token("--text-faint", "#7b8494");
@@ -852,18 +1029,20 @@ function drawHrrChart() {
     ctx.moveTo(padLeft, y);
     ctx.lineTo(w - padRight, y);
     ctx.stroke();
-    ctx.fillText(formatTick(value), padLeft - 5, y);
+    ctx.fillText(formatTick(value, yAxis.step), padLeft - 5, y);
   }
   ctx.textBaseline = "alphabetic";
-  xAxis.ticks.forEach((value, i) => {
+  xAxis.ticks.forEach((value) => {
     const x = Math.round(xOf(value)) + 0.5;
     ctx.beginPath();
     ctx.moveTo(x, padTop);
     ctx.lineTo(x, padTop + plotH);
     ctx.stroke();
-    // The outermost labels are aligned inwards so they can't be clipped by the canvas edge.
-    ctx.textAlign = i === 0 ? "left" : i === xAxis.ticks.length - 1 ? "right" : "center";
-    ctx.fillText(formatTick(value), x, h - 4);
+    // Align by position, not by index: only a label actually sitting at the canvas edge needs
+    // to be pulled inwards, and with an exact axis the last tick is usually not at the edge.
+    const EDGE_PX = 14;
+    ctx.textAlign = x - padLeft < EDGE_PX ? "left" : w - padRight - x < EDGE_PX ? "right" : "center";
+    ctx.fillText(formatTick(value, xAxis.step), x, h - 4);
   });
   ctx.setLineDash([]);
   ctx.beginPath();
@@ -875,21 +1054,27 @@ function drawHrrChart() {
   ctx.strokeStyle = token("--accent", "#ff6a3d");
   ctx.lineWidth = 1.4;
   ctx.beginPath();
-  data.forEach((d, i) => (i === 0 ? ctx.moveTo(xOf(d.t), yOf(d.kw)) : ctx.lineTo(xOf(d.t), yOf(d.kw))));
+  data.forEach((d, i) => (i === 0 ? ctx.moveTo(xOf(d.t), yOf(d.v)) : ctx.lineTo(xOf(d.t), yOf(d.v))));
   ctx.stroke();
 }
 
 async function loadJobHistoryForChart(jobId) {
+  // A new job means new devices -- start from HRR, which every case has.
   state.hrrHistory = [];
+  state.deviceHistory = [];
+  state.plotSignal = { kind: "hrr", device: null, unit: "kW" };
+  syncPlotSignalOptions([]);
+  updatePlotCaption();
+  refreshDeviceOptions(jobId);
   try {
     const metrics = await apiGet(`/api/jobs/${jobId}/metrics`);
     for (const m of metrics.out_file_metrics) {
       if (m.simulation_time_s != null && m.total_hrr_kw != null) {
-        state.hrrHistory.push({ t: m.simulation_time_s, kw: m.total_hrr_kw });
+        appendSample(state.hrrHistory, m.simulation_time_s, m.total_hrr_kw);
       }
       state.lastSimTime = m.simulation_time_s ?? state.lastSimTime;
     }
-    drawHrrChart();
+    drawLivePlot();
   } catch (e) {
     // best effort only
   }
@@ -1013,7 +1198,7 @@ connectWebSocket();
 window.addEventListener("resize", () => {
   drawSparkline("cpu-sparkline", state.cpuTotalHistory);
   drawCoreHeatmap();
-  drawHrrChart();
+  drawLivePlot();
 });
 setInterval(refreshNodeStatus, 15000);
 setInterval(tickElapsedAndRemaining, 1000);
