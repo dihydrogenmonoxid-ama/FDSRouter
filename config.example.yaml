@@ -4,6 +4,9 @@
 # `fdsrouter start` once without a config.yaml -- it will be generated automatically and try
 # to find fds/mpirun on PATH itself.
 
+# 127.0.0.1 keeps FDSRouter reachable only from this machine. To operate it from other
+# computers in the office (browser on a workstation, service on the compute server), set this
+# to "0.0.0.0". FDSRouter has no authentication yet, so only do that on a trusted network.
 host: "127.0.0.1"
 port: 8000
 open_browser: true
@@ -26,6 +29,13 @@ mpi_command_template:
 
 # Number of MPI processes to use when a job doesn't specify its own.
 default_mpi_processes: 1
+
+# Where cases uploaded through the web interface are stored. Each upload gets its own
+# subdirectory, which becomes the working directory FDS writes its results into.
+upload_dir: "./data/cases"
+
+# Rejection threshold for a single upload, in megabytes (sum of all files).
+max_upload_mb: 512
 
 # Temperature/fan readout is platform-dependent and usually unavailable on macOS without
 # sudo. Core functionality (queue, load monitoring, out-file parsing) does not depend on it.

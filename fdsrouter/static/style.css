@@ -673,6 +673,27 @@ button.small { font-size: 11px; padding: 5px 9px; }
 .field input:focus, .field select:focus { outline: 1px solid var(--data); outline-offset: -1px; border-color: var(--data); }
 .field input[type="number"] { flex: none; width: 80px; }
 .field input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
+
+.field input[type="file"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.field input[type="file"]::file-selector-button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+#upload-status { display: block; margin-top: 6px; }
 .field .hint { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 
 /* ---------------------------------------------------------- file browser -- */

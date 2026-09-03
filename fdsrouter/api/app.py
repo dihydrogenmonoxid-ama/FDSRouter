@@ -10,7 +10,14 @@ import psutil
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from fdsrouter.api import routes_browse, routes_jobs, routes_nodes, routes_queue, routes_settings
+from fdsrouter.api import (
+    routes_browse,
+    routes_jobs,
+    routes_nodes,
+    routes_queue,
+    routes_settings,
+    routes_upload,
+)
 from fdsrouter.api.ws import ConnectionManager
 from fdsrouter.config import Config
 from fdsrouter.core import external_jobs, system_monitor
@@ -75,6 +82,7 @@ def create_app(config: Config) -> FastAPI:
     app.include_router(routes_browse.router)
     app.include_router(routes_queue.router)
     app.include_router(routes_settings.router)
+    app.include_router(routes_upload.router)
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:

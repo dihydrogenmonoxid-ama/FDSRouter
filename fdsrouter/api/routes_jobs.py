@@ -3,13 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from fdsrouter.core.fds_parser import (
     parse_mesh_cell_count_from_file,
     parse_mesh_count_from_file,
     parse_sim_end_time_s_from_file,
 )
+from fdsrouter.core.case_files import result_files, safe_filename, write_results_zip
 from fdsrouter.core.job_runner import extract_chid
 from fdsrouter.core.out_parser import parse_devc_devices, parse_devc_series
 
@@ -146,6 +149,49 @@ def get_job_device_series(job_id: str, device: str, request: Request) -> dict:
     if series is None:
         raise HTTPException(status_code=404, detail="Messstelle nicht gefunden")
     return {"device": series.device, "unit": series.unit, "samples": series.samples}
+
+
+@router.get("/{job_id}/results")
+def download_job_results(job_id: str, request: Request):
+    """Download the case's input and output files as one zip.
+
+    This is the counterpart to uploading: with FDSRouter running on a compute server, the
+    results have to come back to the workstation somehow. The archive is built in the data
+    directory and deleted again once the response has been sent.
+    """
+    job = _require_job(job_id, request)
+    fds_file = Path(job["fds_file_path"])
+    if not fds_file.is_file():
+        raise HTTPException(status_code=404, detail="Falldatei nicht mehr vorhanden")
+    if not result_files(fds_file):
+        raise HTTPException(status_code=404, detail="Keine Ergebnisdateien gefunden")
+
+    export_dir = request.app.state.config.resolved_data_dir / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    archive = export_dir / f"{job_id}.zip"
+    write_results_zip(fds_file, archive)
+
+    # Job name and CHID are often the same word -- don't ship a "pan_check_pan_check.zip".
+    stem = safe_filename(job["name"]) or "fdsrouter"
+    chid = extract_chid(fds_file)
+    download_name = f"{stem}.zip" if stem == chid else f"{stem}_{chid}.zip"
+    return FileResponse(
+        archive,
+        media_type="application/zip",
+        filename=download_name,
+        background=BackgroundTask(archive.unlink, missing_ok=True),
+    )
+
+
+@router.get("/{job_id}/results/manifest")
+def list_job_results(job_id: str, request: Request) -> dict:
+    """What the zip would contain -- lets the UI hide the download when there is nothing yet."""
+    job = _require_job(job_id, request)
+    files = result_files(Path(job["fds_file_path"]))
+    return {
+        "files": [{"name": f.name, "bytes": f.stat().st_size} for f in files],
+        "total_bytes": sum(f.stat().st_size for f in files),
+    }
 
 
 @router.get("/{job_id}/metrics")

@@ -25,6 +25,8 @@ class Config:
     mpi_command_template: list[str] = field(default_factory=lambda: list(DEFAULT_MPI_COMMAND_TEMPLATE))
     default_mpi_processes: int = 1
     temperature_enabled: bool = True
+    upload_dir: Path = field(default_factory=lambda: Path("./data/cases"))
+    max_upload_mb: int = 512
 
     @property
     def db_path(self) -> Path:
@@ -33,6 +35,10 @@ class Config:
     @property
     def resolved_data_dir(self) -> Path:
         return self.data_dir if self.data_dir.is_absolute() else self.project_dir / self.data_dir
+
+    @property
+    def resolved_upload_dir(self) -> Path:
+        return self.upload_dir if self.upload_dir.is_absolute() else self.project_dir / self.upload_dir
 
 
 def _auto_detect_binaries() -> tuple[str | None, str | None]:
@@ -53,6 +59,8 @@ def _write_default_config(path: Path) -> dict:
         "mpi_command_template": list(DEFAULT_MPI_COMMAND_TEMPLATE),
         "default_mpi_processes": 1,
         "temperature_enabled": True,
+        "upload_dir": "./data/cases",
+        "max_upload_mb": 512,
     }
     with path.open("w", encoding="utf-8") as f:
         f.write(
@@ -83,6 +91,8 @@ def load_config(project_dir: Path) -> Config:
     cfg.mpi_command_template = raw.get("mpi_command_template") or list(DEFAULT_MPI_COMMAND_TEMPLATE)
     cfg.default_mpi_processes = int(raw.get("default_mpi_processes", 1))
     cfg.temperature_enabled = bool(raw.get("temperature_enabled", True))
+    cfg.upload_dir = Path(raw.get("upload_dir", "./data/cases"))
+    cfg.max_upload_mb = int(raw.get("max_upload_mb", 512))
 
     cfg.resolved_data_dir.mkdir(parents=True, exist_ok=True)
     return cfg

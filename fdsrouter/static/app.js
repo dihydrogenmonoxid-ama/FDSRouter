@@ -138,6 +138,9 @@ function openNewJobModal() {
   el("selected-file-info").textContent = "";
   el("mpi-row").hidden = true;
   el("new-job-submit").disabled = true;
+  el("upload-input").value = "";
+  el("upload-btn").disabled = true;
+  el("upload-status").textContent = t("uploadHint");
   el("new-job-overlay").hidden = false;
   browse(getLastBrowsePath());
 }
@@ -184,12 +187,13 @@ async function browse(path) {
   }
 }
 
-async function selectFile(path, liEl) {
+async function selectFile(path, liEl = null) {
   modalState.selectedFilePath = path;
   document.querySelectorAll("#browser-list li.selected").forEach((n) => n.classList.remove("selected"));
-  liEl.classList.add("selected");
+  if (liEl) liEl.classList.add("selected");
 
   el("selected-file-name").textContent = path.split("/").pop();
+  el("selected-file-name").title = path;
   el("selected-file-info").textContent = "…";
   el("new-job-submit").disabled = true;
   el("mpi-row").hidden = true;
@@ -212,6 +216,57 @@ async function selectFile(path, liEl) {
     el("new-job-submit").disabled = false;
   } catch (e) {
     el("selected-file-info").textContent = e.message;
+  }
+}
+
+/** POST the case with XHR rather than fetch: only XHR reports upload progress, and a case
+ *  copied to a compute server over the office network is big enough to need it. */
+function uploadCase(formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/upload");
+    request.upload.addEventListener("progress", (ev) => {
+      if (ev.lengthComputable) onProgress((ev.loaded / ev.total) * 100);
+    });
+    request.addEventListener("load", () => {
+      let body = {};
+      try {
+        body = JSON.parse(request.responseText);
+      } catch (e) {
+        // a non-JSON error page -- fall through to the status code below
+      }
+      if (request.status >= 200 && request.status < 300) resolve(body);
+      else reject(new Error(body.detail || `HTTP ${request.status}`));
+    });
+    request.addEventListener("error", () => reject(new Error(t("nodeUnreachable"))));
+    request.send(formData);
+  });
+}
+
+async function startUpload() {
+  const input = el("upload-input");
+  const files = Array.from(input.files || []);
+  if (files.length === 0) return;
+
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+
+  const status = el("upload-status");
+  const button = el("upload-btn");
+  button.disabled = true;
+  status.textContent = t("uploadRunning", { percent: "0" });
+  try {
+    const result = await uploadCase(form, (percent) => {
+      status.textContent = t("uploadRunning", { percent: percent.toFixed(0) });
+    });
+    status.textContent = t("uploadDone", { dir: result.case_dir });
+    // Continue exactly as if the uploaded file had been picked in the server browser.
+    await selectFile(result.fds_file_path);
+    await browse(result.case_dir);
+  } catch (e) {
+    status.textContent = t("uploadFailed", { error: e.message });
+  } finally {
+    button.disabled = files.length === 0;
   }
 }
 
@@ -394,6 +449,39 @@ function downloadConsoleLog() {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+/** Ask what the archive would contain before sending the browser to the download, so an
+ *  empty or cleaned-up case gives a readable message instead of a raw 404 page. */
+async function downloadResults(jobId) {
+  try {
+    const manifest = await apiGet(`/api/jobs/${jobId}/results/manifest`);
+    if (!manifest.files.length) {
+      alert(t("noResults"));
+      return;
+    }
+  } catch (e) {
+    alert(t("noResults"));
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = `/api/jobs/${jobId}/results`;
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function renderResultsButton(jobId) {
+  const btn = document.createElement("button");
+  btn.className = "secondary small";
+  btn.textContent = t("downloadResults");
+  btn.title = t("downloadResultsTitle");
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    downloadResults(jobId);
+  };
+  return btn;
 }
 
 function renderLogButton(jobId) {
@@ -684,6 +772,7 @@ function renderRunningCard(job) {
     }
   };
   li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
+  li.querySelector(".job-actions").appendChild(renderResultsButton(job.id));
 
   // The card is rebuilt on every queue update, so the select is repopulated from state here.
   const select = li.querySelector("#plot-signal");
@@ -759,6 +848,7 @@ function renderHistoryCard(job) {
     <div class="job-details" ${isExpanded ? "" : "hidden"}></div>`;
 
   li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
+  li.querySelector(".job-actions").appendChild(renderResultsButton(job.id));
   const detailsEl = li.querySelector(".job-details");
   const toggleBtn = li.querySelector(".details-toggle");
 
@@ -1314,6 +1404,10 @@ function connectWebSocket() {
 el("new-job-btn").addEventListener("click", openNewJobModal);
 el("new-job-cancel").addEventListener("click", closeNewJobModal);
 el("new-job-submit").addEventListener("click", submitNewJob);
+el("upload-btn").addEventListener("click", startUpload);
+el("upload-input").addEventListener("change", (ev) => {
+  el("upload-btn").disabled = (ev.target.files || []).length === 0;
+});
 el("new-job-overlay").addEventListener("click", (ev) => {
   if (ev.target === el("new-job-overlay")) closeNewJobModal();
 });

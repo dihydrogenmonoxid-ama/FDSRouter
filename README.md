@@ -23,6 +23,10 @@ verwalten wollen.
 
 ## Funktionsumfang
 
+- **Im Netzwerk betreibbar** — der Dienst läuft auf dem Rechner, der rechnet; bedient wird er
+  aus dem Browser eines beliebigen Arbeitsplatzes im selben Netz (`host: "0.0.0.0"` setzen).
+  Fälle lassen sich vom Arbeitsplatz **hochladen** und das Ergebnisverzeichnis als ZIP wieder
+  **herunterladen** — kein Terminal-Zugang zum Rechenknoten nötig
 - **Warteschlange verwalten** — `.fds`-Dateien über einen serverseitigen Datei-Browser einreihen,
   Reihenfolge per Drag & Drop ändern, auch während bereits ein Lauf aktiv ist (nur der laufende
   Job ist fixiert, alle wartenden Jobs bleiben jederzeit umsortierbar)
@@ -40,6 +44,8 @@ verwalten wollen.
   werden rein lesend erkannt und mit angezeigt (es wird nie in sie eingegriffen)
 - **Energie- und Kostenerfassung** (optional) — Leistungsaufnahme über einen beliebigen
   Home-Assistant-Sensor integrieren, inklusive Strompreis und PV-Kennzeichnung
+- **Archiv** — abgeschlossene Läufe lassen sich aus der Historie ausblenden, bleiben unter
+  „Archiv“ einsehbar und kalibrieren weiterhin die Zeitschätzung
 - **Persistenz** — Warteschlange, Job-Historie und Metrik-Verlauf liegen in SQLite und überstehen
   einen Neustart
 - **Zweisprachige Oberfläche** (Deutsch/Englisch), helles und dunkles Farbschema
@@ -94,10 +100,31 @@ installationsspezifisch und wird bewusst nicht mit versioniert.
 | `mpi_command_template`  | Argumentliste für den Simulationsstart (Platzhalter: `{mpi_exec}`, `{n_processes}`, `{fds_binary}`, `{fds_file}`) |
 | `default_mpi_processes` | Standard-Prozessanzahl, falls die Datei keine Meshes erkennen lässt |
 | `data_dir`              | Ablageort der SQLite-Datenbank und der Job-Logs                     |
+| `upload_dir`            | Ablageort hochgeladener Fälle (je Upload ein Unterverzeichnis)      |
+| `max_upload_mb`         | Obergrenze für einen Upload in MB                                   |
 | `temperature_enabled`   | Temperaturanzeige an/aus (auf macOS ohne `sudo` meist ohnehin leer) |
 
 Energie- und Home-Assistant-Einstellungen ändern sich im laufenden Betrieb und werden deshalb
 nicht in `config.yaml`, sondern über den Einstellungsdialog der Oberfläche gepflegt.
+
+## Betrieb im Netzwerk
+
+Standardmäßig lauscht FDSRouter nur auf `127.0.0.1`, ist also allein vom Rechner selbst aus
+erreichbar. Für den Bürobetrieb — Dienst auf dem Rechenserver, Bedienung vom Arbeitsplatz —
+genügt in der `config.yaml`:
+
+```yaml
+host: "0.0.0.0"
+```
+
+Danach ist die Oberfläche unter `http://<server-ip>:8000/` erreichbar. Fälle lädt man über
+„Neuer Job → Vom Rechner hochladen" hoch (genau eine `.fds`-Datei, weitere Falldateien wie
+Rampen oder Include-Dateien optional); FDS rechnet im angelegten Upload-Verzeichnis, und über
+„Ergebnisse" an der Job-Karte kommt das Ergebnisverzeichnis als ZIP zurück.
+
+**FDSRouter hat noch keine Benutzerverwaltung.** Wer die Oberfläche erreicht, darf Jobs
+einreihen und beenden — der Dienst gehört daher ausschließlich in ein vertrauenswürdiges Netz,
+nicht ans offene Internet.
 
 ## Tests
 

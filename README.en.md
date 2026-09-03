@@ -26,6 +26,10 @@ who no longer want to babysit the queue by hand.
 
 ## Features
 
+- **Runs across the network** — the service runs on the machine that computes; it is operated
+  from a browser on any workstation on the same network (set `host: "0.0.0.0"`). Cases can be
+  **uploaded** from the workstation and the result directory **downloaded** again as a ZIP — no
+  terminal access to the compute node required
 - **Queue management** — add `.fds` files through a server-side file browser and reorder them by
   drag & drop, including while a run is already active (only the running job is pinned, every
   waiting job stays reorderable at any time)
@@ -43,6 +47,8 @@ who no longer want to babysit the queue by hand.
   and displayed alongside your own jobs (they are never signalled or interfered with)
 - **Energy and cost accounting** (optional) — integrate power draw from any Home Assistant
   sensor, including electricity tariff and a solar-power flag
+- **Archive** — finished runs can be moved out of the history, stay readable under "Archive"
+  and keep calibrating the runtime estimate
 - **Persistence** — queue, job history and metric time series live in SQLite and survive a
   restart
 - **Bilingual interface** (German/English), light and dark colour scheme
@@ -96,10 +102,30 @@ to your installation and is deliberately not version-controlled.
 | `mpi_command_template`  | argument list used to launch a simulation (placeholders: `{mpi_exec}`, `{n_processes}`, `{fds_binary}`, `{fds_file}`) |
 | `default_mpi_processes` | fallback process count when no meshes can be read from the file     |
 | `data_dir`              | location of the SQLite database and the job logs                    |
+| `upload_dir`            | where uploaded cases are stored (one subdirectory per upload)        |
+| `max_upload_mb`         | size limit for a single upload, in MB                               |
 | `temperature_enabled`   | temperature readout on/off (usually empty on macOS without `sudo`)  |
 
 Energy and Home Assistant settings change during operation and are therefore edited in the
 interface's settings dialog rather than in `config.yaml`.
+
+## Running it on the network
+
+By default FDSRouter listens on `127.0.0.1` only, so it is reachable from the machine itself.
+For office use — service on the compute server, operated from a workstation — set this in
+`config.yaml`:
+
+```yaml
+host: "0.0.0.0"
+```
+
+The interface is then available at `http://<server-ip>:8000/`. Cases are uploaded through
+"Neuer Job → Vom Rechner hochladen" (exactly one `.fds` file, further case files such as ramps
+or includes optional); FDS computes in the created upload directory, and the "Ergebnisse" button
+on a job card returns the result directory as a ZIP.
+
+**FDSRouter has no user management yet.** Anyone who can reach the interface can enqueue and
+stop jobs, so the service belongs on a trusted network only, never on the open internet.
 
 ## Tests
 
