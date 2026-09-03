@@ -52,6 +52,17 @@ def inspect_fds_file(path: str, request: Request) -> dict:
     }
 
 
+@router.get("/archived")
+def list_archived_jobs(request: Request) -> list[dict]:
+    return request.app.state.db.get_archived_jobs()
+
+
+@router.post("/archive")
+async def archive_jobs(request: Request) -> dict:
+    """Archive every finished run at once -- the "Archivieren" action in the history panel."""
+    return {"archived": await request.app.state.queue_manager.archive_finished()}
+
+
 @router.post("")
 async def create_job(payload: JobCreate, request: Request) -> dict:
     fds_file = _require_fds_file(payload.fds_file_path)

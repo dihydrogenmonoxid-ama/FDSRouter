@@ -627,11 +627,15 @@ button.small { font-size: 11px; padding: 5px 9px; }
 
 .dialog-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--line);
 }
+
+/* Pushes the closing action away from the ones that act on the content. */
+.dialog-actions .spacer { flex: 1 1 auto; }
 
 /* Label column keeps every dialog's fields on the same axis. */
 .field {

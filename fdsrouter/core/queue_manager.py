@@ -123,6 +123,14 @@ class QueueManager:
         await self._broadcast_queue()
         return job
 
+    async def archive_finished(self) -> int:
+        """Move finished runs out of the history view and tell every client. Queued and
+        running jobs are untouched, so this is safe to do while a simulation is going."""
+        count = self.db.archive_finished_jobs()
+        if count:
+            await self._broadcast_queue()
+        return count
+
     async def reorder(self, ordered_job_ids: list[str]) -> None:
         self.db.reorder_queue(self.node_id, ordered_job_ids)
         await self._broadcast_queue()

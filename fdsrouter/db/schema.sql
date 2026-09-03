@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS job (
     pid INTEGER,
     exit_message TEXT,
     energy_kwh REAL,
-    energy_cost_eur REAL
+    energy_cost_eur REAL,
+    -- Set when a finished run is moved out of the history view. The row is kept: archived runs
+    -- still calibrate the runtime estimator, they are just no longer shown by default.
+    archived_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_status_queue ON job (status, queue_position);

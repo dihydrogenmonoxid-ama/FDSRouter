@@ -105,7 +105,16 @@
 
     <div class="column">
       <section class="panel">
-        <div class="panel-head"><h2 data-i18n="historyTitle">Historie</h2></div>
+        <div class="panel-head">
+          <h2 data-i18n="historyTitle">Historie</h2>
+          <div class="spacer"></div>
+          <button id="archive-btn" class="secondary small" data-i18n="archiveButton">Archivieren</button>
+          <label class="switch">
+            <input type="checkbox" id="archive-view-toggle" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span data-i18n="archiveViewLabel">Archiv</span>
+          </label>
+        </div>
         <div class="panel-body">
           <ul id="history-list"><li class="note" data-i18n="historyEmpty">Noch keine abgeschlossenen Läufe.</li></ul>
         </div>
@@ -201,6 +210,9 @@
       <div class="dialog-head"><h2 data-i18n="consoleLog">Konsolen-Log</h2></div>
       <div class="dialog-body"><pre id="console-log-content" class="console"></pre></div>
       <div class="dialog-actions">
+        <button id="console-copy" class="secondary" data-i18n="copyLog" disabled>Kopieren</button>
+        <button id="console-download" class="secondary" data-i18n="downloadLog" disabled>Als .txt speichern</button>
+        <span class="spacer"></span>
         <button id="console-close" class="secondary" data-i18n="close">Schließen</button>
       </div>
     </div>

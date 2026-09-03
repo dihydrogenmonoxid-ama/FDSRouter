@@ -14,10 +14,17 @@ const state = {
   jobMetricsCache: new Map(),
   autoAdvance: false,
   consoleLogJobId: null,
+  // Kept separately from the <pre>, which also shows placeholder text ("Log ist leer.") that
+  // must never end up in the clipboard or in a saved file.
+  consoleLogText: "",
   knownCoreCount: 0,
   cpuTotalHistory: [],
   coreHistory: [],
   externalJobs: [],
+  // The history panel shows either the current runs or the archive; archived runs are not
+  // part of the regular job payload and are fetched on demand.
+  showArchive: false,
+  archivedJobs: [],
 };
 
 const modalState = {
@@ -32,6 +39,26 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
   );
+}
+
+/** Size a canvas for the display it is on and return a context that takes CSS pixels.
+ *
+ *  A canvas has two sizes: the CSS box it occupies and the pixel buffer behind it. Setting only
+ *  the buffer to the CSS size draws at 1x and lets the browser upscale it, which on a HiDPI
+ *  screen (devicePixelRatio 2) is exactly what makes lines and tick labels look soft next to
+ *  the crisp DOM text around them. So the buffer is allocated at device resolution and the
+ *  context is scaled back, letting every drawing routine keep working in CSS pixels.
+ */
+function prepareCanvas(canvas, cssWidth, cssHeight) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+  const ctx = canvas.getContext("2d");
+  // Assigning width/height resets the context, so this both clears and re-applies the scale.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return ctx;
 }
 
 /** Read a design token so canvas drawings follow the active theme like the DOM does. */
@@ -238,9 +265,7 @@ function onLanguageChange(lang) {
 function onThemeChange(theme) {
   setTheme(theme);
   // Canvas pixels don't restyle themselves -- redraw everything that reads theme tokens.
-  drawSparkline("cpu-sparkline", state.cpuTotalHistory);
-  drawCoreHeatmap();
-  drawLivePlot();
+  redrawCanvases();
 }
 
 async function saveSettings() {
@@ -273,21 +298,102 @@ async function testEnergyConnection() {
 
 async function openConsoleLog(jobId) {
   state.consoleLogJobId = jobId;
+  state.consoleLogText = "";
   const pre = el("console-log-content");
   pre.textContent = t("detailLoading");
+  updateConsoleActions();
   el("console-overlay").hidden = false;
   try {
     const data = await apiGet(`/api/jobs/${jobId}/log`);
-    pre.textContent = data.log || t("logEmpty");
+    state.consoleLogText = data.log || "";
+    pre.textContent = state.consoleLogText || t("logEmpty");
     pre.scrollTop = pre.scrollHeight;
   } catch (e) {
     pre.textContent = t("logUnavailable");
   }
+  updateConsoleActions();
 }
 
 function closeConsoleLog() {
   state.consoleLogJobId = null;
+  state.consoleLogText = "";
   el("console-overlay").hidden = true;
+}
+
+/** Append a line arriving over the WebSocket while this job's log is open. */
+function appendConsoleLogLine(line) {
+  state.consoleLogText += (state.consoleLogText ? "\n" : "") + line;
+  const pre = el("console-log-content");
+  pre.textContent = state.consoleLogText;
+  pre.scrollTop = pre.scrollHeight;
+  updateConsoleActions();
+}
+
+function updateConsoleActions() {
+  const empty = !state.consoleLogText;
+  el("console-copy").disabled = empty;
+  el("console-download").disabled = empty;
+}
+
+/** Filesystem-safe stem built from the job name, so the saved file is recognisable. */
+function logFileName(jobId) {
+  const job = state.jobs.find((j) => j.id === jobId);
+  const name = (job ? job.name : "fdsrouter").replace(/[^A-Za-z0-9._-]+/g, "_");
+  const started = job && job.started_at ? new Date(job.started_at) : new Date();
+  const stamp = [
+    started.getFullYear(),
+    String(started.getMonth() + 1).padStart(2, "0"),
+    String(started.getDate()).padStart(2, "0"),
+  ].join("-");
+  return `${name}_${stamp}_konsole.txt`;
+}
+
+async function copyConsoleLog() {
+  const button = el("console-copy");
+  const restore = () => setTimeout(() => (button.textContent = t("copyLog")), 1500);
+  try {
+    // navigator.clipboard needs a secure context -- given on localhost, but not when the
+    // service is bound to a LAN address over plain http, hence the textarea fallback.
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(state.consoleLogText);
+    } else if (!copyViaTextarea(state.consoleLogText)) {
+      throw new Error("execCommand copy rejected");
+    }
+    button.textContent = t("copyLogDone");
+  } catch (e) {
+    button.textContent = t("copyLogFailed");
+  }
+  restore();
+}
+
+function copyViaTextarea(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (e) {
+    ok = false;
+  }
+  document.body.removeChild(area);
+  return ok;
+}
+
+function downloadConsoleLog() {
+  const blob = new Blob([state.consoleLogText], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = logFileName(state.consoleLogJobId);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function renderLogButton(jobId) {
@@ -432,6 +538,40 @@ function updatePlotCaption() {
   setText("plot-y-unit", state.plotSignal.unit || "");
 }
 
+// ---------- History archive ----------
+
+async function refreshArchivedJobs() {
+  try {
+    state.archivedJobs = await apiGet("/api/jobs/archived");
+  } catch (e) {
+    state.archivedJobs = [];
+  }
+  renderJobs();
+}
+
+function onArchiveViewToggle(enabled) {
+  state.showArchive = enabled;
+  if (enabled) refreshArchivedJobs();
+  else renderJobs();
+}
+
+async function archiveFinishedJobs() {
+  const finished = state.jobs.filter((j) => ["done", "failed", "cancelled"].includes(j.status));
+  if (finished.length === 0) {
+    alert(t("archiveNothing"));
+    return;
+  }
+  // Archiving sweeps the whole history at once, so it asks first -- the runs stay readable
+  // under "Archiv", but there is no undo button for the sweep itself.
+  if (!confirm(t("archiveConfirm", { count: finished.length }))) return;
+  try {
+    await apiSend("/api/jobs/archive", "POST");
+    if (state.showArchive) await refreshArchivedJobs();
+  } catch (e) {
+    alert(t("archiveFailed", { error: e.message }));
+  }
+}
+
 // ---------- Queue rendering ----------
 
 function fmtDuration(seconds) {
@@ -459,7 +599,8 @@ function renderJobs() {
   const jobs = state.jobs;
   const running = jobs.find((j) => j.status === "running");
   const queued = jobs.filter((j) => j.status === "queued").sort((a, b) => a.queue_position - b.queue_position);
-  const history = jobs.filter((j) => ["done", "failed", "cancelled"].includes(j.status)).slice(0, 15);
+  const finished = jobs.filter((j) => ["done", "failed", "cancelled"].includes(j.status));
+  const history = state.showArchive ? state.archivedJobs : finished.slice(0, 15);
 
   const previousRunning = state.runningJobId;
   state.runningJobId = running ? running.id : null;
@@ -478,10 +619,15 @@ function renderJobs() {
   const historyList = el("history-list");
   historyList.innerHTML = "";
   if (history.length === 0) {
-    historyList.innerHTML = `<li class="note">${t("historyEmpty")}</li>`;
+    historyList.innerHTML = `<li class="note">${t(state.showArchive ? "archiveEmpty" : "historyEmpty")}</li>`;
   } else {
     for (const job of history) historyList.appendChild(renderHistoryCard(job));
   }
+
+  // Nothing in the archive view can be archived again, so the action hides there.
+  const archiveBtn = el("archive-btn");
+  archiveBtn.hidden = state.showArchive;
+  archiveBtn.disabled = finished.length === 0;
 
   updateDashboardVisibility();
 }
@@ -602,6 +748,10 @@ function renderHistoryCard(job) {
     </div>
     <div class="job-meta">${esc(t("jobMetaDone", { duration: fmtDuration(job.actual_duration_s) }))}${
       job.exit_message ? " · " + esc(job.exit_message) : ""
+    }${
+      job.archived_at
+        ? " · " + esc(t("archivedMeta", { date: new Date(job.archived_at).toLocaleDateString() }))
+        : ""
     }</div>
     <div class="job-actions">
       <button class="secondary small details-toggle">${isExpanded ? t("hideDetails") : t("showDetails")}</button>
@@ -852,9 +1002,9 @@ function handleSystemMetrics(msg) {
 function drawSparkline(canvasId, values) {
   const canvas = el(canvasId);
   if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const w = (canvas.width = canvas.clientWidth || 100);
-  const h = (canvas.height = canvas.clientHeight || 22);
+  const w = canvas.clientWidth || 100;
+  const h = canvas.clientHeight || 22;
+  const ctx = prepareCanvas(canvas, w, h);
   ctx.clearRect(0, 0, w, h);
   if (values.length < 2) return;
 
@@ -904,12 +1054,10 @@ function drawCoreHeatmap() {
   const wrap = el("core-heatmap-wrap");
   const available = Math.max(240, (wrap ? wrap.clientWidth : 400) - 8);
   const colW = Math.max(2, (available - labelW) / CPU_HISTORY_LENGTH);
-  const w = (canvas.width = Math.round(labelW + CPU_HISTORY_LENGTH * colW));
-  const h = (canvas.height = state.knownCoreCount * rowH);
-  canvas.style.width = w + "px";
-  canvas.style.height = h + "px";
+  const w = Math.round(labelW + CPU_HISTORY_LENGTH * colW);
+  const h = state.knownCoreCount * rowH;
 
-  const ctx = canvas.getContext("2d");
+  const ctx = prepareCanvas(canvas, w, h);
   ctx.clearRect(0, 0, w, h);
   ctx.font = "9px " + token("--font-mono", "monospace");
   ctx.textBaseline = "middle";
@@ -975,9 +1123,9 @@ function formatTick(value, step) {
 function drawLivePlot() {
   const canvas = el("hrr-canvas");
   if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const w = (canvas.width = canvas.clientWidth);
-  const h = (canvas.height = canvas.clientHeight || 120);
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight || 120;
+  const ctx = prepareCanvas(canvas, w, h);
   ctx.clearRect(0, 0, w, h);
 
   const data = plotSeries().slice();
@@ -1153,9 +1301,7 @@ function connectWebSocket() {
     } else if (msg.type === "energy_update") {
       handleEnergyUpdate(msg);
     } else if (msg.type === "log_line" && msg.job_id === state.consoleLogJobId) {
-      const pre = el("console-log-content");
-      pre.textContent += (pre.textContent ? "\n" : "") + msg.line;
-      pre.scrollTop = pre.scrollHeight;
+      appendConsoleLogLine(msg.line);
     }
   };
 
@@ -1183,11 +1329,15 @@ el("settings-save").addEventListener("click", saveSettings);
 el("ha-test-btn").addEventListener("click", testEnergyConnection);
 
 el("console-close").addEventListener("click", closeConsoleLog);
+el("console-copy").addEventListener("click", copyConsoleLog);
+el("console-download").addEventListener("click", downloadConsoleLog);
 el("console-overlay").addEventListener("click", (ev) => {
   if (ev.target === el("console-overlay")) closeConsoleLog();
 });
 
 el("auto-advance-toggle").addEventListener("change", (ev) => onAutoAdvanceToggle(ev.target.checked));
+el("archive-btn").addEventListener("click", archiveFinishedJobs);
+el("archive-view-toggle").addEventListener("change", (ev) => onArchiveViewToggle(ev.target.checked));
 
 setTheme(getTheme());
 applyStaticTranslations();
@@ -1195,10 +1345,24 @@ refreshNodeStatus();
 refreshJobs();
 apiGet("/api/queue/state").then((s) => applyAutoAdvanceState(s.auto_advance)).catch(() => {});
 connectWebSocket();
-window.addEventListener("resize", () => {
+function redrawCanvases() {
   drawSparkline("cpu-sparkline", state.cpuTotalHistory);
   drawCoreHeatmap();
   drawLivePlot();
-});
+}
+
+window.addEventListener("resize", redrawCanvases);
+
+// Dragging the window to a display with a different pixel ratio doesn't necessarily resize it,
+// but the buffers then have the wrong resolution -- watch the ratio itself and re-arm, since
+// the query only matches the ratio it was created with.
+function watchPixelRatio() {
+  const query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  query.addEventListener("change", () => {
+    redrawCanvases();
+    watchPixelRatio();
+  }, { once: true });
+}
+watchPixelRatio();
 setInterval(refreshNodeStatus, 15000);
 setInterval(tickElapsedAndRemaining, 1000);

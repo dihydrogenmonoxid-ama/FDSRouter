@@ -34,6 +34,17 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         with self._lock, self.conn:
             self.conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        schema.sql only runs CREATE TABLE IF NOT EXISTS, so an existing installation would
+        never see a new column -- and dropping the table would throw away the job history.
+        """
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(job)")}
+        if "archived_at" not in columns:
+            self.conn.execute("ALTER TABLE job ADD COLUMN archived_at TEXT")
 
     # -- Node -----------------------------------------------------------------
 
@@ -104,25 +115,50 @@ class Database:
             ).fetchone()
         return _row_to_dict(row)
 
-    def get_jobs(self, statuses: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def get_jobs(
+        self, statuses: Iterable[str] | None = None, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         # node_hostname is which machine a job (will run/is running/ran) on -- shown next to
         # the running job now, and lets a future multi-node UI distinguish jobs per machine.
+        conditions = []
+        params: list[Any] = []
+        if statuses:
+            statuses = list(statuses)
+            conditions.append(f"job.status IN ({','.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if not include_archived:
+            conditions.append("job.archived_at IS NULL")
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
         with self._lock:
-            if statuses:
-                placeholders = ",".join("?" for _ in statuses)
-                rows = self.conn.execute(
-                    "SELECT job.*, node.hostname AS node_hostname FROM job "
-                    f"LEFT JOIN node ON node.id = job.node_id WHERE job.status IN ({placeholders}) "
-                    "ORDER BY (job.status='running') DESC, job.queue_position ASC, job.created_at ASC",
-                    tuple(statuses),
-                ).fetchall()
-            else:
-                rows = self.conn.execute(
-                    "SELECT job.*, node.hostname AS node_hostname FROM job "
-                    "LEFT JOIN node ON node.id = job.node_id "
-                    "ORDER BY (job.status='running') DESC, job.queue_position ASC, job.created_at DESC"
-                ).fetchall()
+            rows = self.conn.execute(
+                "SELECT job.*, node.hostname AS node_hostname FROM job "
+                f"LEFT JOIN node ON node.id = job.node_id {where} "
+                "ORDER BY (job.status='running') DESC, job.queue_position ASC, job.created_at DESC",
+                tuple(params),
+            ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_archived_jobs(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT job.*, node.hostname AS node_hostname FROM job "
+                "LEFT JOIN node ON node.id = job.node_id WHERE job.archived_at IS NOT NULL "
+                "ORDER BY job.archived_at DESC, job.finished_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def archive_finished_jobs(self) -> int:
+        """Move every finished run out of the history view. Queued and running jobs are never
+        touched, so archiving during an active run is safe. Returns how many were archived."""
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                "UPDATE job SET archived_at=? "
+                "WHERE archived_at IS NULL AND status IN ('done', 'failed', 'cancelled')",
+                (_now(),),
+            )
+            return cursor.rowcount
 
     def get_running_job(self, node_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -201,6 +237,8 @@ class Database:
                 self.conn.execute("UPDATE job SET queue_position=? WHERE id=?", (position, job_id))
 
     def get_completed_jobs_for_node(self, node_id: str) -> list[dict[str, Any]]:
+        # Deliberately includes archived runs: archiving tidies the UI, it does not discard the
+        # measurements the runtime estimate calibrates against.
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM job WHERE node_id=? AND status='done' AND mesh_cell_count IS NOT NULL "
