@@ -1,0 +1,1019 @@
+"use strict";
+
+const state = {
+  jobs: [],
+  runningJobId: null,
+  hrrHistory: [], // [{t: simulation_time_s, kw: total_hrr_kw}]
+  lastSimTime: null,
+  expandedHistoryIds: new Set(),
+  jobMetricsCache: new Map(),
+  autoAdvance: false,
+  consoleLogJobId: null,
+  knownCoreCount: 0,
+  cpuTotalHistory: [],
+  coreHistory: [],
+  externalJobs: [],
+};
+
+const modalState = {
+  selectedFilePath: null,
+  meshInfo: null,
+};
+
+const el = (id) => document.getElementById(id);
+
+/** Job names, exit messages and device IDs come from user files -- escape before innerHTML. */
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+/** Read a design token so canvas drawings follow the active theme like the DOM does. */
+function token(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+// ---------- API helpers ----------
+
+async function apiGet(path) {
+  const res = await fetch(path);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `${path}: ${res.status}`);
+  }
+  return res.json();
+}
+
+async function apiSend(path, method, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `${path}: ${res.status}`);
+  }
+  return res.json();
+}
+
+// ---------- Node status ----------
+
+async function refreshNodeStatus() {
+  try {
+    const nodes = await apiGet("/api/nodes");
+    const node = nodes[0];
+    if (!node) return;
+    el("node-status").innerHTML =
+      `<span class="dot"></span>` +
+      esc(
+        t("nodeSummary", {
+          hostname: node.hostname,
+          cores: node.cpu_cores,
+          ram: Math.round(node.ram_total_mb / 1024),
+        })
+      );
+  } catch (e) {
+    el("node-status").innerHTML = `<span class="dot"></span>${t("nodeUnreachable")}`;
+  }
+}
+
+// ---------- New Job modal: file browser + mesh/MPI preview ----------
+
+const LAST_BROWSE_PATH_KEY = "fdsrouter.lastBrowsePath";
+
+function getLastBrowsePath() {
+  try {
+    return localStorage.getItem(LAST_BROWSE_PATH_KEY);
+  } catch (e) {
+    return null;
+  }
+}
+
+function setLastBrowsePath(path) {
+  try {
+    localStorage.setItem(LAST_BROWSE_PATH_KEY, path);
+  } catch (e) {
+    // best effort only
+  }
+}
+
+function openNewJobModal() {
+  modalState.selectedFilePath = null;
+  modalState.meshInfo = null;
+  el("selected-file-name").textContent = t("noFileSelected");
+  el("selected-file-info").textContent = "";
+  el("mpi-row").hidden = true;
+  el("new-job-submit").disabled = true;
+  el("new-job-overlay").hidden = false;
+  browse(getLastBrowsePath());
+}
+
+function closeNewJobModal() {
+  el("new-job-overlay").hidden = true;
+}
+
+async function browse(path) {
+  const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : "/api/browse";
+  let data;
+  try {
+    data = await apiGet(url);
+  } catch (e) {
+    // the remembered path may no longer exist (moved/deleted) -- fall back to the default
+    data = await apiGet("/api/browse");
+  }
+  setLastBrowsePath(data.path);
+
+  el("browser-path").textContent = data.path;
+  const list = el("browser-list");
+  list.innerHTML = "";
+
+  if (data.parent) {
+    const up = document.createElement("li");
+    up.className = "browser-up";
+    up.textContent = "..";
+    up.title = t("browserUp");
+    up.onclick = () => browse(data.parent);
+    list.appendChild(up);
+  }
+
+  for (const entry of data.entries) {
+    const li = document.createElement("li");
+    li.className = entry.is_dir ? "is-dir" : "is-file";
+    li.textContent = entry.is_dir ? `${entry.name}/` : entry.name;
+    if (entry.is_dir) {
+      li.onclick = () => browse(entry.path);
+    } else {
+      li.onclick = () => selectFile(entry.path, li);
+    }
+    if (modalState.selectedFilePath === entry.path) li.classList.add("selected");
+    list.appendChild(li);
+  }
+}
+
+async function selectFile(path, liEl) {
+  modalState.selectedFilePath = path;
+  document.querySelectorAll("#browser-list li.selected").forEach((n) => n.classList.remove("selected"));
+  liEl.classList.add("selected");
+
+  el("selected-file-name").textContent = path.split("/").pop();
+  el("selected-file-info").textContent = "…";
+  el("new-job-submit").disabled = true;
+  el("mpi-row").hidden = true;
+
+  try {
+    const info = await apiGet(`/api/jobs/inspect?path=${encodeURIComponent(path)}`);
+    modalState.meshInfo = info;
+    el("selected-file-info").textContent = t("meshInfo", {
+      meshes: info.mesh_count,
+      cells: info.mesh_cell_count ?? t("unknownValue"),
+    });
+
+    const mpiInput = el("mpi-processes");
+    mpiInput.value = info.default_mpi_processes;
+    mpiInput.min = 1;
+    mpiInput.max = info.mesh_count || 9999;
+    el("mpi-hint").textContent = info.mesh_count ? t("mpiProcessesHint", { max: info.mesh_count }) : "";
+
+    el("mpi-row").hidden = false;
+    el("new-job-submit").disabled = false;
+  } catch (e) {
+    el("selected-file-info").textContent = e.message;
+  }
+}
+
+async function submitNewJob() {
+  if (!modalState.selectedFilePath) return;
+  const mpiProcesses = parseInt(el("mpi-processes").value, 10) || undefined;
+  el("new-job-submit").disabled = true;
+  try {
+    await apiSend("/api/jobs", "POST", {
+      fds_file_path: modalState.selectedFilePath,
+      mpi_processes: mpiProcesses,
+    });
+    closeNewJobModal();
+  } catch (e) {
+    alert(t("enqueueFailed", { error: e.message }));
+  } finally {
+    el("new-job-submit").disabled = false;
+  }
+}
+
+// ---------- Settings modal ----------
+
+async function openSettingsModal() {
+  el("language-select").value = getLang();
+  el("theme-select").value = getTheme();
+  el("ha-test-result").textContent = "";
+  try {
+    const s = await apiGet("/api/settings");
+    el("ha-base-url").value = s.ha_base_url || "";
+    el("ha-token").value = s.ha_token || "";
+    el("ha-entity-id").value = s.ha_entity_id || "";
+    el("electricity-price").value = s.electricity_price_eur_per_kwh || "";
+    el("solar-powered").checked = s.solar_powered === "true";
+  } catch (e) {
+    // settings are optional -- an unreachable backend just leaves the form empty
+  }
+  el("settings-overlay").hidden = false;
+}
+
+function closeSettingsModal() {
+  el("settings-overlay").hidden = true;
+}
+
+function onLanguageChange(lang) {
+  setLang(lang);
+  applyStaticTranslations();
+  refreshNodeStatus();
+  renderJobs();
+}
+
+function onThemeChange(theme) {
+  setTheme(theme);
+  // Canvas pixels don't restyle themselves -- redraw everything that reads theme tokens.
+  drawSparkline("cpu-sparkline", state.cpuTotalHistory);
+  drawCoreHeatmap();
+  drawHrrChart();
+}
+
+async function saveSettings() {
+  try {
+    await apiSend("/api/settings", "PUT", {
+      ha_base_url: el("ha-base-url").value || null,
+      ha_token: el("ha-token").value || null,
+      ha_entity_id: el("ha-entity-id").value || null,
+      electricity_price_eur_per_kwh: el("electricity-price").value ? parseFloat(el("electricity-price").value) : null,
+      solar_powered: el("solar-powered").checked,
+    });
+    closeSettingsModal();
+  } catch (e) {
+    alert(t("settingsSaveFailed", { error: e.message }));
+  }
+}
+
+async function testEnergyConnection() {
+  const resultEl = el("ha-test-result");
+  resultEl.textContent = "…";
+  try {
+    const result = await apiSend("/api/settings/test-energy-connection", "POST");
+    resultEl.textContent = result.ok ? t("haTestSuccess", { watts: result.watts.toFixed(0) }) : t("haTestFailure");
+  } catch (e) {
+    resultEl.textContent = t("haTestFailure");
+  }
+}
+
+// ---------- Console log modal ----------
+
+async function openConsoleLog(jobId) {
+  state.consoleLogJobId = jobId;
+  const pre = el("console-log-content");
+  pre.textContent = t("detailLoading");
+  el("console-overlay").hidden = false;
+  try {
+    const data = await apiGet(`/api/jobs/${jobId}/log`);
+    pre.textContent = data.log || t("logEmpty");
+    pre.scrollTop = pre.scrollHeight;
+  } catch (e) {
+    pre.textContent = t("logUnavailable");
+  }
+}
+
+function closeConsoleLog() {
+  state.consoleLogJobId = null;
+  el("console-overlay").hidden = true;
+}
+
+function renderLogButton(jobId) {
+  const btn = document.createElement("button");
+  btn.className = "secondary small";
+  btn.textContent = "Log";
+  btn.title = t("viewLog");
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    openConsoleLog(jobId);
+  };
+  return btn;
+}
+
+// ---------- Auto-advance toggle ----------
+
+function applyAutoAdvanceState(enabled) {
+  state.autoAdvance = enabled;
+  el("auto-advance-toggle").checked = enabled;
+}
+
+async function onAutoAdvanceToggle(enabled) {
+  try {
+    await apiSend("/api/queue/auto-advance", "POST", { enabled });
+  } catch (e) {
+    alert(t("startJobFailed", { error: e.message }));
+    applyAutoAdvanceState(!enabled); // revert the checkbox on failure
+  }
+}
+
+// ---------- Queue rendering ----------
+
+function fmtDuration(seconds) {
+  if (seconds == null || !isFinite(seconds)) return "–";
+  seconds = Math.max(0, Math.round(seconds));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function renderStatus(status) {
+  return `<span class="status ${status}">${esc(statusLabel(status))}</span>`;
+}
+
+function statusLabel(status) {
+  const key = { queued: "statusQueued", running: "statusRunning",
+    done: "statusDone", failed: "statusFailed", cancelled: "statusCancelled" }[status];
+  return key ? t(key) : status;
+}
+
+function renderJobs() {
+  const jobs = state.jobs;
+  const running = jobs.find((j) => j.status === "running");
+  const queued = jobs.filter((j) => j.status === "queued").sort((a, b) => a.queue_position - b.queue_position);
+  const history = jobs.filter((j) => ["done", "failed", "cancelled"].includes(j.status)).slice(0, 15);
+
+  const previousRunning = state.runningJobId;
+  state.runningJobId = running ? running.id : null;
+  if (state.runningJobId !== previousRunning) state.lastSimTime = null;
+
+  const queueList = el("queue-list");
+  queueList.innerHTML = "";
+  if (running) queueList.appendChild(renderRunningCard(running));
+  if (queued.length === 0 && !running) {
+    queueList.innerHTML = `<li class="note">${t("queueEmpty")}</li>`;
+  } else {
+    queued.forEach((job, i) => queueList.appendChild(renderQueuedCard(job, !running && i === 0, i + 1)));
+  }
+  if (running) drawHrrChart();
+
+  const historyList = el("history-list");
+  historyList.innerHTML = "";
+  if (history.length === 0) {
+    historyList.innerHTML = `<li class="note">${t("historyEmpty")}</li>`;
+  } else {
+    for (const job of history) historyList.appendChild(renderHistoryCard(job));
+  }
+
+  updateDashboardVisibility();
+}
+
+function renderRunningCard(job) {
+  const li = document.createElement("li");
+  li.className = "job running";
+  const endTime = job.sim_end_time_s != null ? `${job.sim_end_time_s.toFixed(0)} s` : t("unknownValue");
+  li.innerHTML = `
+    <div class="job-head">
+      <span class="job-name">${esc(job.name)}</span>
+      ${renderStatus("running")}
+    </div>
+    <div class="job-meta">${esc(t("jobMetaRunning", {
+      machine: job.node_hostname ?? t("unknownValue"),
+      mpi: job.mpi_process_count,
+      cells: job.mesh_cell_count ?? t("unknownValue"),
+    }))}</div>
+    <div class="live-row">
+      <span class="live-item"><span class="k">${t("liveElapsed")}</span><span class="v" id="run-elapsed">–</span></span>
+      <span class="live-item"><span class="k">${t("liveRemaining")}</span><span class="v" id="run-remaining">–</span></span>
+      <span class="live-item"><span class="k">${t("liveSimTime")}</span><span class="v" id="run-simtime">–</span><span class="u">s</span></span>
+      <span class="live-item"><span class="k">${t("liveHrr")}</span><span class="v" id="run-hrr">–</span><span class="u">kW</span></span>
+      <span class="live-item" id="run-energy-stat" hidden><span class="k">${t("detailEnergy")}</span><span class="v" id="run-energy">–</span></span>
+    </div>
+    <div class="gauge">
+      <div class="gauge-track"><div class="gauge-fill" id="running-progress-bar" style="width:0%"></div></div>
+      <div class="gauge-scale">
+        <span>0 s</span>
+        <span id="running-progress-pct">0 %</span>
+        <span>${esc(endTime)}</span>
+      </div>
+    </div>
+    <div class="plot">
+      <div class="plot-caption"><span>${t("hrrAxisLabel")}</span><span>${t("simTimeAxisLabel")}</span></div>
+      <canvas id="hrr-canvas"></canvas>
+    </div>
+    <div class="job-actions">
+      <button class="danger small" id="stop-btn">${t("stopJob")}</button>
+    </div>`;
+
+  li.querySelector("#stop-btn").onclick = async () => {
+    if (!confirm(t("stopJobConfirm", { name: job.name }))) return;
+    try {
+      await apiSend(`/api/jobs/${job.id}/stop`, "POST");
+    } catch (e) {
+      alert(t("stopFailed", { error: e.message }));
+    }
+  };
+  li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
+
+  return li;
+}
+
+function renderQueuedCard(job, isNext, position) {
+  const li = document.createElement("li");
+  li.className = "job queued";
+  li.draggable = true;
+  li.dataset.jobId = job.id;
+  li.innerHTML = `
+    <div class="job-head">
+      <span class="job-name"><span class="job-index">${String(position).padStart(2, "0")}</span>${esc(job.name)}</span>
+      ${renderStatus("queued")}
+    </div>
+    <div class="job-meta">${esc(t("jobMetaQueued", {
+      duration: fmtDuration(job.estimated_duration_s),
+      cells: job.mesh_cell_count ?? t("unknownValue"),
+      mpi: job.mpi_process_count,
+    }))}</div>
+    <div class="job-actions">
+      ${isNext ? `<button class="small" id="start-btn">${t("startJob")}</button>` : ""}
+      <button class="secondary small cancel-btn">${t("removeJob")}</button>
+    </div>`;
+
+  li.querySelector(".cancel-btn").onclick = async (ev) => {
+    ev.stopPropagation();
+    try {
+      await apiSend(`/api/jobs/${job.id}/cancel`, "POST");
+    } catch (e) {
+      alert(t("removeFailed", { error: e.message }));
+    }
+  };
+
+  if (isNext) {
+    li.querySelector("#start-btn").onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        await apiSend(`/api/jobs/${job.id}/start`, "POST");
+      } catch (e) {
+        alert(t("startJobFailed", { error: e.message }));
+      }
+    };
+  }
+
+  attachDragHandlers(li);
+  return li;
+}
+
+function renderHistoryCard(job) {
+  const li = document.createElement("li");
+  li.className = `job ${job.status}`;
+  const isExpanded = state.expandedHistoryIds.has(job.id);
+  li.innerHTML = `
+    <div class="job-head">
+      <span class="job-name">${esc(job.name)}</span>
+      ${renderStatus(job.status)}
+    </div>
+    <div class="job-meta">${esc(t("jobMetaDone", { duration: fmtDuration(job.actual_duration_s) }))}${
+      job.exit_message ? " · " + esc(job.exit_message) : ""
+    }</div>
+    <div class="job-actions">
+      <button class="secondary small details-toggle">${isExpanded ? t("hideDetails") : t("showDetails")}</button>
+    </div>
+    <div class="job-details" ${isExpanded ? "" : "hidden"}></div>`;
+
+  li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
+  const detailsEl = li.querySelector(".job-details");
+  const toggleBtn = li.querySelector(".details-toggle");
+
+  toggleBtn.onclick = async () => {
+    const willExpand = detailsEl.hidden;
+    detailsEl.hidden = !willExpand;
+    toggleBtn.textContent = willExpand ? t("hideDetails") : t("showDetails");
+    if (willExpand) {
+      state.expandedHistoryIds.add(job.id);
+      await loadHistoryDetails(job, detailsEl);
+    } else {
+      state.expandedHistoryIds.delete(job.id);
+    }
+  };
+
+  if (isExpanded) loadHistoryDetails(job, detailsEl);
+
+  return li;
+}
+
+async function loadHistoryDetails(job, container) {
+  container.innerHTML = `<div class="note">${t("detailLoading")}</div>`;
+  try {
+    let metrics = state.jobMetricsCache.get(job.id);
+    if (!metrics) {
+      metrics = await apiGet(`/api/jobs/${job.id}/metrics`);
+      state.jobMetricsCache.set(job.id, metrics);
+    }
+    const outMetrics = metrics.out_file_metrics || [];
+    const last = outMetrics[outMetrics.length - 1];
+    const peakHrr = outMetrics.reduce(
+      (max, m) => (m.total_hrr_kw != null && m.total_hrr_kw > max ? m.total_hrr_kw : max),
+      0
+    );
+
+    const rows = [
+      [t("detailNode"), job.node_hostname ?? t("unknownValue")],
+      [t("detailMeshCells"), job.mesh_cell_count ?? t("unknownValue")],
+      [t("detailMpi"), job.mpi_process_count],
+      [t("detailEstimated"), fmtDuration(job.estimated_duration_s)],
+      [t("detailActual"), fmtDuration(job.actual_duration_s)],
+      [t("detailFinalSimTime"), last?.simulation_time_s != null ? `${last.simulation_time_s.toFixed(2)} s` : t("unknownValue")],
+      [t("detailPeakHrr"), outMetrics.length ? `${peakHrr.toFixed(1)} kW` : t("unknownValue")],
+      [t("detailWarnings"), last?.warnings_count ?? 0],
+      [t("detailStarted"), job.started_at ? new Date(job.started_at).toLocaleString() : "–"],
+      [t("detailFinished"), job.finished_at ? new Date(job.finished_at).toLocaleString() : "–"],
+    ];
+    if (job.energy_kwh != null) {
+      rows.push([t("detailEnergy"), `${job.energy_kwh.toFixed(2)} kWh`]);
+      if (job.energy_cost_eur != null) rows.push([t("detailCost"), `${job.energy_cost_eur.toFixed(2)} €`]);
+    }
+    if (job.exit_message) rows.push([t("detailExitMessage"), job.exit_message]);
+
+    container.innerHTML = `<dl class="spec">${rows
+      .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`)
+      .join("")}</dl>`;
+  } catch (e) {
+    container.innerHTML = `<div class="note">${t("detailUnavailable")}</div>`;
+  }
+}
+
+// ---------- Drag & drop reordering (queued jobs only) ----------
+
+function attachDragHandlers(li) {
+  li.addEventListener("dragstart", (ev) => {
+    li.classList.add("dragging");
+    ev.dataTransfer.setData("text/plain", li.dataset.jobId);
+    ev.dataTransfer.effectAllowed = "move";
+  });
+  li.addEventListener("dragend", () => li.classList.remove("dragging"));
+  li.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    li.classList.add("drag-over");
+  });
+  li.addEventListener("dragleave", () => li.classList.remove("drag-over"));
+  li.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    li.classList.remove("drag-over");
+    const draggedId = ev.dataTransfer.getData("text/plain");
+    if (!draggedId || draggedId === li.dataset.jobId) return;
+
+    const queueList = el("queue-list");
+    const cards = Array.from(queueList.querySelectorAll("li.job.queued"));
+    const orderedIds = cards.map((c) => c.dataset.jobId);
+    const fromIdx = orderedIds.indexOf(draggedId);
+    const toIdx = orderedIds.indexOf(li.dataset.jobId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    orderedIds.splice(toIdx, 0, orderedIds.splice(fromIdx, 1)[0]);
+
+    try {
+      await apiSend("/api/jobs/reorder", "PATCH", { ordered_job_ids: orderedIds });
+    } catch (e) {
+      alert(t("reorderFailed", { error: e.message }));
+      await refreshJobs();
+    }
+  });
+}
+
+// ---------- Live dashboard ----------
+
+function updateDashboardVisibility() {
+  const hasRunning = !!state.runningJobId;
+  el("dashboard-empty").hidden = hasRunning;
+  el("dashboard").hidden = !hasRunning;
+}
+
+function currentRunningJob() {
+  return state.jobs.find((j) => j.id === state.runningJobId);
+}
+
+function setText(id, value) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = value;
+}
+
+function handleJobMetrics(msg) {
+  if (msg.job_id !== state.runningJobId) return;
+
+  const procTbody = el("proc-tbody");
+  procTbody.innerHTML = "";
+  for (const p of msg.processes || []) {
+    const tr = document.createElement("tr");
+    const core = p.core != null ? p.core : t("notAvailable");
+    tr.innerHTML =
+      `<td>${p.pid}</td><td>${esc(core)}</td>` +
+      `<td class="n">${p.cpu_percent.toFixed(1)}</td><td class="n">${p.ram_percent.toFixed(1)}</td>`;
+    procTbody.appendChild(tr);
+  }
+
+  const devices = msg.devices || {};
+  const devcTbody = el("devc-tbody");
+  const deviceNames = Object.keys(devices);
+  devcTbody.innerHTML = deviceNames.length
+    ? deviceNames
+        .map((name) => `<tr><td>${esc(name)}</td><td class="n">${devices[name].toFixed(1)}</td></tr>`)
+        .join("")
+    : `<tr><td colspan="2" class="empty">${t("noDevices")}</td></tr>`;
+
+  if (msg.out) {
+    setText("run-simtime", msg.out.simulation_time_s != null ? msg.out.simulation_time_s.toFixed(2) : "–");
+    setText("run-hrr", msg.out.total_hrr_kw != null ? msg.out.total_hrr_kw.toFixed(1) : "–");
+    setText(
+      "limiting-mesh",
+      msg.out.limiting_mesh != null ? t("limitingMeshValue", { mesh: msg.out.limiting_mesh }) : t("unknownValue")
+    );
+
+    if (msg.out.simulation_time_s != null && msg.out.total_hrr_kw != null) {
+      state.hrrHistory.push({ t: msg.out.simulation_time_s, kw: msg.out.total_hrr_kw });
+      if (state.hrrHistory.length > 500) state.hrrHistory.shift();
+      drawHrrChart();
+    }
+
+    state.lastSimTime = msg.out.simulation_time_s;
+    updateProgress(msg.out.simulation_time_s);
+  }
+}
+
+function updateProgress(simTime) {
+  const job = currentRunningJob();
+  const bar = el("running-progress-bar");
+  if (!job || !job.sim_end_time_s || simTime == null) {
+    if (bar) bar.style.width = "0%";
+    setText("running-progress-pct", "–");
+    setText("run-remaining", "–");
+    return;
+  }
+  const fraction = Math.min(1, simTime / job.sim_end_time_s);
+  if (bar) bar.style.width = `${(fraction * 100).toFixed(1)}%`;
+  setText("running-progress-pct", `${(fraction * 100).toFixed(1)} %`);
+
+  if (job.started_at && fraction > 0.001) {
+    const elapsedS = (Date.now() - Date.parse(job.started_at)) / 1000;
+    const remainingS = (elapsedS * (1 - fraction)) / fraction;
+    setText("run-remaining", fmtDuration(remainingS));
+  }
+}
+
+function tickElapsedAndRemaining() {
+  const job = currentRunningJob();
+  if (!job || !job.started_at) {
+    setText("run-elapsed", "–");
+    return;
+  }
+  const elapsedS = (Date.now() - Date.parse(job.started_at)) / 1000;
+  setText("run-elapsed", fmtDuration(elapsedS));
+  if (state.lastSimTime != null) updateProgress(state.lastSimTime);
+}
+
+// ---------- Permanent system panel (independent of any job) ----------
+
+const CPU_HISTORY_LENGTH = 90; // 90 samples @ 2s = 3 min rolling window
+
+function handleSystemMetrics(msg) {
+  setText("sys-cpu-percent", msg.cpu_percent_total != null ? msg.cpu_percent_total.toFixed(1) : "–");
+  setText(
+    "sys-ram-combined",
+    msg.ram_percent != null && msg.ram_used_mb != null && msg.ram_total_mb != null
+      ? `${msg.ram_percent.toFixed(0)}% · ${(msg.ram_used_mb / 1024).toFixed(1)} / ${(msg.ram_total_mb / 1024).toFixed(1)} GB`
+      : "–"
+  );
+  setText("sys-temp", msg.cpu_temperature_c != null ? msg.cpu_temperature_c.toFixed(1) : t("notAvailable"));
+  setText("sys-fan", msg.fan_rpm != null ? msg.fan_rpm.toFixed(0) : t("notAvailable"));
+
+  if (msg.cpu_percent_total != null) {
+    state.cpuTotalHistory.push(msg.cpu_percent_total);
+    if (state.cpuTotalHistory.length > CPU_HISTORY_LENGTH) state.cpuTotalHistory.shift();
+    drawSparkline("cpu-sparkline", state.cpuTotalHistory);
+  }
+
+  const cores = msg.cpu_percent_per_core || [];
+  if (cores.length !== state.knownCoreCount) {
+    state.knownCoreCount = cores.length;
+    state.coreHistory = [];
+  }
+  state.coreHistory.push(cores);
+  if (state.coreHistory.length > CPU_HISTORY_LENGTH) state.coreHistory.shift();
+  drawCoreHeatmap();
+}
+
+function drawSparkline(canvasId, values) {
+  const canvas = el(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = (canvas.width = canvas.clientWidth || 100);
+  const h = (canvas.height = canvas.clientHeight || 22);
+  ctx.clearRect(0, 0, w, h);
+  if (values.length < 2) return;
+
+  // Right-aligned like the per-core heatmap next to it: newest sample at the right edge,
+  // so both readings share one time axis running left (old) to right (now).
+  const step = w / (CPU_HISTORY_LENGTH - 1);
+  const x0 = w - (values.length - 1) * step;
+  const pointX = (i) => x0 + i * step;
+  const pointY = (v) => h - 1 - (Math.min(100, Math.max(0, v)) / 100) * (h - 2);
+
+  ctx.beginPath();
+  values.forEach((v, i) => (i === 0 ? ctx.moveTo(pointX(i), pointY(v)) : ctx.lineTo(pointX(i), pointY(v))));
+  ctx.strokeStyle = token("--data", "#4c9aff");
+  ctx.lineWidth = 1.25;
+  ctx.stroke();
+
+  ctx.lineTo(pointX(values.length - 1), h);
+  ctx.lineTo(pointX(0), h);
+  ctx.closePath();
+  ctx.globalAlpha = 0.14;
+  ctx.fillStyle = token("--data", "#4c9aff");
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function parseHexColor(hex, fallback) {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!match) return fallback;
+  const value = parseInt(match[1], 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+/** Load ramp: idle cores stay at the panel background, busy cores rise to the accent. */
+function coreIntensityColor(pct, from, to) {
+  const f = Math.max(0, Math.min(1, pct / 100));
+  const mix = from.map((c, i) => Math.round(c + f * (to[i] - c)));
+  return `rgb(${mix[0]},${mix[1]},${mix[2]})`;
+}
+
+function drawCoreHeatmap() {
+  const canvas = el("core-heatmap");
+  if (!canvas || state.knownCoreCount === 0) return;
+  const rowH = 12;
+  const labelW = 54;
+  // Fill the panel width: the column width follows from it, so the plot spans the full
+  // 3-minute window instead of ending in dead space.
+  const wrap = el("core-heatmap-wrap");
+  const available = Math.max(240, (wrap ? wrap.clientWidth : 400) - 8);
+  const colW = Math.max(2, (available - labelW) / CPU_HISTORY_LENGTH);
+  const w = (canvas.width = Math.round(labelW + CPU_HISTORY_LENGTH * colW));
+  const h = (canvas.height = state.knownCoreCount * rowH);
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = "9px " + token("--font-mono", "monospace");
+  ctx.textBaseline = "middle";
+
+  const faint = token("--text-faint", "#7b8494");
+  const textColor = token("--text", "#dfe4ec");
+  const rampFrom = parseHexColor(token("--surface-2", "#161b25"), [22, 27, 37]);
+  const rampTo = parseHexColor(token("--accent", "#ff6a3d"), [255, 106, 61]);
+
+  const latest = state.coreHistory[state.coreHistory.length - 1] || [];
+  for (let core = 0; core < state.knownCoreCount; core++) {
+    const pct = latest[core];
+    const y = core * rowH + rowH / 2;
+    ctx.fillStyle = faint;
+    ctx.fillText(`C${String(core).padStart(2, "0")}`, 2, y);
+    ctx.fillStyle = textColor;
+    ctx.fillText(pct != null ? `${String(Math.round(pct)).padStart(3, " ")}%` : "  –", 26, y);
+  }
+
+  const offset = CPU_HISTORY_LENGTH - state.coreHistory.length;
+  state.coreHistory.forEach((sample, col) => {
+    for (let core = 0; core < state.knownCoreCount; core++) {
+      ctx.fillStyle = coreIntensityColor(sample[core] ?? 0, rampFrom, rampTo);
+      ctx.fillRect(labelW + (offset + col) * colW, core * rowH, Math.ceil(colW), rowH - 1);
+    }
+  });
+}
+
+/** Round a range up to ticks at 1/2/5 x 10^n, the way a plotted axis is normally scaled. */
+function niceAxisTicks(maxValue, count) {
+  if (!isFinite(maxValue) || maxValue <= 0) return { ticks: [0], max: 1 };
+  const rawStep = maxValue / count;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const normalized = rawStep / magnitude;
+  const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
+  const ticks = [];
+  for (let value = 0; value <= maxValue + step / 2; value += step) ticks.push(value);
+  return { ticks, max: ticks[ticks.length - 1] };
+}
+
+function formatTick(value) {
+  if (value === 0) return "0";
+  const abs = Math.abs(value);
+  if (abs >= 1e6) return value.toExponential(0).replace("e+", "e");
+  if (abs < 1) return value.toFixed(2);
+  return String(Math.round(value));
+}
+
+function drawHrrChart() {
+  const canvas = el("hrr-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = (canvas.width = canvas.clientWidth);
+  const h = (canvas.height = canvas.clientHeight || 120);
+  ctx.clearRect(0, 0, w, h);
+
+  const data = state.hrrHistory.slice();
+  if (data.length === 0 || data[0].t > 0.001) data.unshift({ t: 0, kw: 0 });
+
+  const job = currentRunningJob();
+  // Fixed x-axis at T_END where the case declares one: the curve then grows across a stable
+  // axis instead of the axis rescaling under it on every sample.
+  const xAxis = niceAxisTicks((job && job.sim_end_time_s) || data[data.length - 1].t || 1, 5);
+  const yAxis = niceAxisTicks(Math.max(...data.map((d) => d.kw), 1), 4);
+
+  const padLeft = 42;
+  const padBottom = 15;
+  const padTop = 6;
+  const padRight = 6;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
+  if (plotW <= 0 || plotH <= 0) return;
+
+  const xOf = (value) => padLeft + (Math.min(value, xAxis.max) / xAxis.max) * plotW;
+  const yOf = (value) => padTop + plotH - (Math.min(value, yAxis.max) / yAxis.max) * plotH;
+
+  const line = token("--line", "#232a37");
+  const faint = token("--text-faint", "#7b8494");
+  ctx.font = "9px " + token("--font-mono", "monospace");
+  ctx.lineWidth = 1;
+
+  // Dotted gridlines + tick labels, solid frame on the two axes carrying the scale.
+  ctx.strokeStyle = line;
+  ctx.fillStyle = faint;
+  ctx.setLineDash([1, 3]);
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "right";
+  for (const value of yAxis.ticks) {
+    const y = Math.round(yOf(value)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(w - padRight, y);
+    ctx.stroke();
+    ctx.fillText(formatTick(value), padLeft - 5, y);
+  }
+  ctx.textBaseline = "alphabetic";
+  xAxis.ticks.forEach((value, i) => {
+    const x = Math.round(xOf(value)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, padTop);
+    ctx.lineTo(x, padTop + plotH);
+    ctx.stroke();
+    // The outermost labels are aligned inwards so they can't be clipped by the canvas edge.
+    ctx.textAlign = i === 0 ? "left" : i === xAxis.ticks.length - 1 ? "right" : "center";
+    ctx.fillText(formatTick(value), x, h - 4);
+  });
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(padLeft + 0.5, padTop);
+  ctx.lineTo(padLeft + 0.5, padTop + plotH + 0.5);
+  ctx.lineTo(w - padRight, padTop + plotH + 0.5);
+  ctx.stroke();
+
+  ctx.strokeStyle = token("--accent", "#ff6a3d");
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  data.forEach((d, i) => (i === 0 ? ctx.moveTo(xOf(d.t), yOf(d.kw)) : ctx.lineTo(xOf(d.t), yOf(d.kw))));
+  ctx.stroke();
+}
+
+async function loadJobHistoryForChart(jobId) {
+  state.hrrHistory = [];
+  try {
+    const metrics = await apiGet(`/api/jobs/${jobId}/metrics`);
+    for (const m of metrics.out_file_metrics) {
+      if (m.simulation_time_s != null && m.total_hrr_kw != null) {
+        state.hrrHistory.push({ t: m.simulation_time_s, kw: m.total_hrr_kw });
+      }
+      state.lastSimTime = m.simulation_time_s ?? state.lastSimTime;
+    }
+    drawHrrChart();
+  } catch (e) {
+    // best effort only
+  }
+}
+
+// ---------- External (unmanaged) FDS runs -- read-only ----------
+
+function renderExternalJobs(jobs) {
+  state.externalJobs = jobs;
+  const panel = el("external-jobs-panel");
+  panel.hidden = jobs.length === 0;
+  if (jobs.length === 0) return;
+
+  const list = el("external-jobs-list");
+  list.innerHTML = jobs
+    .map((j) => {
+      const simTime = j.simulation_time_s != null ? `${j.simulation_time_s.toFixed(1)} s` : t("unknownValue");
+      const hrr = j.total_hrr_kw != null ? `${j.total_hrr_kw.toFixed(1)} kW` : t("unknownValue");
+      return `
+        <li class="job">
+          <div class="job-head"><span class="job-name">${esc(j.chid)}</span></div>
+          <div class="job-meta">${esc(
+            t("externalJobMeta", { pid: j.pid, caseDir: j.case_dir, simTime, hrr })
+          )}</div>
+        </li>`;
+    })
+    .join("");
+}
+
+// ---------- Energy / cost ----------
+
+function handleEnergyUpdate(msg) {
+  if (msg.job_id !== state.runningJobId) return;
+  const stat = el("run-energy-stat");
+  if (stat) stat.hidden = false;
+  const label = msg.solar_powered
+    ? t("solarPoweredBadge")
+    : msg.energy_cost_eur != null
+    ? `${msg.energy_kwh.toFixed(2)} kWh · ${msg.energy_cost_eur.toFixed(2)} €`
+    : `${msg.energy_kwh.toFixed(2)} kWh`;
+  setText("run-energy", label);
+}
+
+// ---------- Polling / WebSocket ----------
+
+async function refreshJobs() {
+  const jobs = await apiGet("/api/jobs");
+  const previousRunning = state.runningJobId;
+  state.jobs = jobs;
+  renderJobs();
+  if (state.runningJobId && state.runningJobId !== previousRunning) {
+    loadJobHistoryForChart(state.runningJobId);
+  }
+}
+
+function connectWebSocket() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "queue_update") {
+      const previousRunning = state.runningJobId;
+      state.jobs = msg.jobs;
+      applyAutoAdvanceState(msg.auto_advance);
+      renderJobs();
+      if (state.runningJobId && state.runningJobId !== previousRunning) {
+        loadJobHistoryForChart(state.runningJobId);
+      }
+    } else if (msg.type === "job_metrics") {
+      handleJobMetrics(msg);
+    } else if (msg.type === "system_metrics") {
+      handleSystemMetrics(msg);
+    } else if (msg.type === "external_jobs") {
+      renderExternalJobs(msg.jobs);
+    } else if (msg.type === "energy_update") {
+      handleEnergyUpdate(msg);
+    } else if (msg.type === "log_line" && msg.job_id === state.consoleLogJobId) {
+      const pre = el("console-log-content");
+      pre.textContent += (pre.textContent ? "\n" : "") + msg.line;
+      pre.scrollTop = pre.scrollHeight;
+    }
+  };
+
+  ws.onclose = () => setTimeout(connectWebSocket, 2000);
+  ws.onerror = () => ws.close();
+}
+
+// ---------- Init ----------
+
+el("new-job-btn").addEventListener("click", openNewJobModal);
+el("new-job-cancel").addEventListener("click", closeNewJobModal);
+el("new-job-submit").addEventListener("click", submitNewJob);
+el("new-job-overlay").addEventListener("click", (ev) => {
+  if (ev.target === el("new-job-overlay")) closeNewJobModal();
+});
+
+el("settings-btn").addEventListener("click", openSettingsModal);
+el("settings-close").addEventListener("click", closeSettingsModal);
+el("settings-overlay").addEventListener("click", (ev) => {
+  if (ev.target === el("settings-overlay")) closeSettingsModal();
+});
+el("language-select").addEventListener("change", (ev) => onLanguageChange(ev.target.value));
+el("theme-select").addEventListener("change", (ev) => onThemeChange(ev.target.value));
+el("settings-save").addEventListener("click", saveSettings);
+el("ha-test-btn").addEventListener("click", testEnergyConnection);
+
+el("console-close").addEventListener("click", closeConsoleLog);
+el("console-overlay").addEventListener("click", (ev) => {
+  if (ev.target === el("console-overlay")) closeConsoleLog();
+});
+
+el("auto-advance-toggle").addEventListener("change", (ev) => onAutoAdvanceToggle(ev.target.checked));
+
+setTheme(getTheme());
+applyStaticTranslations();
+refreshNodeStatus();
+refreshJobs();
+apiGet("/api/queue/state").then((s) => applyAutoAdvanceState(s.auto_advance)).catch(() => {});
+connectWebSocket();
+window.addEventListener("resize", () => {
+  drawSparkline("cpu-sparkline", state.cpuTotalHistory);
+  drawCoreHeatmap();
+  drawHrrChart();
+});
+setInterval(refreshNodeStatus, 15000);
+setInterval(tickElapsedAndRemaining, 1000);

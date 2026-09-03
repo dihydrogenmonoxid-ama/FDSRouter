@@ -1,0 +1,31 @@
+# Local configuration and runtime data -- generated per installation, never shared
+config.yaml
+data/
+
+# Personal working notes and agent instructions -- not part of the published project
+CLAUDE.md
+.claude/
+
+# Own FDS cases dropped into the demo folder
+demo-fds/*
+!demo-fds/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

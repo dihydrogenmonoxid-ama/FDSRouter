@@ -1,0 +1,32 @@
+# FDSRouter configuration.
+#
+# Copy this file to config.yaml and adjust the paths for your installation, or just run
+# `fdsrouter start` once without a config.yaml -- it will be generated automatically and try
+# to find fds/mpirun on PATH itself.
+
+host: "127.0.0.1"
+port: 8000
+open_browser: true
+
+# Data directory for the SQLite database (relative to the project directory, or absolute).
+data_dir: "./data"
+
+# Path to the FDS binary and the MPI executable.
+fds_binary: "/Applications/FDS/FDS6/bin/fds"
+mpi_executable: "/Applications/FDS/FDS6/bin/openmpi/bin/mpirun"
+
+# Command template as an argument list (not a shell string, to avoid quoting/injection
+# issues). Placeholders: {mpi_exec}, {n_processes}, {fds_binary}, {fds_file}
+mpi_command_template:
+  - "{mpi_exec}"
+  - "-n"
+  - "{n_processes}"
+  - "{fds_binary}"
+  - "{fds_file}"
+
+# Number of MPI processes to use when a job doesn't specify its own.
+default_mpi_processes: 1
+
+# Temperature/fan readout is platform-dependent and usually unavailable on macOS without
+# sudo. Core functionality (queue, load monitoring, out-file parsing) does not depend on it.
+temperature_enabled: true
