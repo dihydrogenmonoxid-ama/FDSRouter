@@ -15,15 +15,20 @@
     <div class="spacer"></div>
     <div class="app-bar-actions">
       <button id="new-job-btn" data-i18n="newJob">New Job</button>
+      <button id="operations-btn" class="secondary" data-i18n="operations">Operations</button>
       <button id="settings-btn" class="secondary" data-i18n="settings">Settings</button>
     </div>
   </header>
 
   <main class="workspace">
     <div class="column">
-      <section class="panel">
+
+      <!-- One list for every run: queued, running and finished are filter states of the same
+           thing, not three places to look. -->
+      <section class="panel" id="runs-panel">
         <div class="panel-head">
-          <h2 data-i18n="queueTitle">Queue</h2>
+          <h2 data-i18n="runsTitle">Runs</h2>
+          <span id="runs-count" class="head-count">0</span>
           <div class="spacer"></div>
           <label class="switch">
             <input type="checkbox" id="auto-advance-toggle" />
@@ -31,11 +36,28 @@
             <span data-i18n="autoAdvanceLabel">Auto-continue</span>
           </label>
         </div>
+
+        <div class="filter-bar">
+          <div class="chips" id="status-filter" role="group" aria-label="Filter">
+            <button class="chip selected" data-filter="all" data-i18n="filterAll">All</button>
+            <button class="chip" data-filter="queued" data-i18n="filterQueued">Waiting</button>
+            <button class="chip" data-filter="running" data-i18n="filterRunning">Running</button>
+            <button class="chip" data-filter="done" data-i18n="filterDone">Finished</button>
+            <button class="chip" data-filter="failed" data-i18n="filterFailed">Failed</button>
+            <button class="chip" data-filter="archive" data-i18n="filterArchive">Archive</button>
+          </div>
+          <div class="spacer"></div>
+          <input id="runs-search" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search runs…" />
+          <button id="archive-btn" class="secondary small" data-i18n="archiveButton">Archive</button>
+        </div>
+
         <div class="panel-body">
-          <ul id="queue-list"><li class="note" data-i18n="queueLoading">Loading…</li></ul>
+          <ul id="runs-list"><li class="note" data-i18n="queueLoading">Loading…</li></ul>
         </div>
       </section>
+    </div>
 
+    <div class="column">
       <!-- Always-on system panel (independent of any job) -->
       <section class="panel">
         <div class="panel-head"><h2 data-i18n="systemPanelTitle">System</h2></div>
@@ -110,70 +132,77 @@
         <div class="panel-body"><ul id="external-jobs-list"></ul></div>
       </section>
     </div>
-
-    <div class="column">
-      <section class="panel">
-        <div class="panel-head">
-          <h2 data-i18n="historyTitle">History</h2>
-          <div class="spacer"></div>
-          <button id="archive-btn" class="secondary small" data-i18n="archiveButton">Archive</button>
-          <label class="switch">
-            <input type="checkbox" id="archive-view-toggle" />
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-            <span data-i18n="archiveViewLabel">Archive</span>
-          </label>
-        </div>
-        <div class="panel-body">
-          <ul id="history-list"><li class="note" data-i18n="historyEmpty">No completed runs yet.</li></ul>
-        </div>
-      </section>
-    </div>
   </main>
 
-  <!-- New job: server-side file picker + mesh/MPI preview. A native <input type=file> can't
-       hand the backend a real filesystem path, which mpirun/fds needs as the case directory. -->
   <div id="new-job-overlay" class="overlay" hidden>
     <div class="dialog">
-      <div class="dialog-head"><h2 data-i18n="newJobModalTitle">New Job</h2></div>
+      <div class="dialog-head"><h2 data-i18n="newJobModalTitle">New run</h2></div>
       <div class="dialog-body">
-        <div class="sub-head" data-i18n="uploadSectionTitle">Upload from your computer</div>
-        <div class="field">
-          <input id="upload-input" type="file" multiple accept=".fds,.csv,.txt,.dat,.inc" />
-          <button id="upload-btn" class="secondary small" data-i18n="uploadButton" disabled>Upload</button>
-        </div>
-        <div class="field">
-          <label for="upload-folder-name" data-i18n="uploadFolderLabel">Target folder</label>
-          <input id="upload-folder-name" type="text" data-i18n-placeholder="uploadFolderPlaceholder" placeholder="derived from the file name" />
-        </div>
-        <div class="field">
-          <label for="upload-parent-select" data-i18n="uploadParentLabel">Create in</label>
-          <select id="upload-parent-select">
-            <option value="default" data-i18n="uploadParentDefault">upload directory</option>
-            <option value="browsed" data-i18n="uploadParentBrowsed">the browsed directory</option>
-          </select>
-        </div>
-        <div id="upload-target-path" class="hint"></div>
-        <div id="upload-status" class="hint" data-i18n="uploadHint">Exactly one .fds file, further case files optional.</div>
 
-        <div class="sub-head" data-i18n="browseSectionTitle">Choose on the server</div>
-        <div id="browser-path">–</div>
-        <ul id="browser-list"></ul>
+        <!-- Three named steps: which file, where it computes, how many processes. The two ways
+             to reach a file are alternatives and are labelled as such. -->
+        <section class="step-block">
+          <div class="step-head"><span class="step-num">1</span><span data-i18n="stepFileTitle">Case file</span></div>
 
-        <div class="selection">
-          <div class="readout-label" data-i18n="selectedFile">Selected file</div>
-          <div id="selected-file-name" data-i18n="noFileSelected">No file selected.</div>
-          <div id="selected-file-info"></div>
-        </div>
+          <div class="choice">
+            <div class="choice-head" data-i18n="stepFileUpload">Upload from your computer</div>
+            <div class="field">
+              <input id="upload-input" type="file" multiple accept=".fds,.csv,.txt,.dat,.inc" />
+              <button id="upload-btn" class="secondary small" data-i18n="uploadButton" disabled>Upload</button>
+            </div>
+            <div id="upload-status" class="hint" data-i18n="uploadHint">Exactly one .fds file, further case files optional.</div>
+          </div>
 
-        <div id="mpi-row" class="field" hidden>
-          <label for="mpi-processes" data-i18n="mpiProcessesLabel">MPI processes</label>
-          <input id="mpi-processes" type="number" min="1" value="1" />
-          <span id="mpi-hint" class="hint"></span>
-        </div>
+          <div class="choice-or"><span data-i18n="orLabel">or</span></div>
+
+          <div class="choice">
+            <div class="choice-head" data-i18n="stepFileBrowse">Pick a file already on the server</div>
+            <div id="browser-path">–</div>
+            <ul id="browser-list"></ul>
+          </div>
+
+          <div class="selection">
+            <div class="readout-label" data-i18n="selectedFile">Selected file</div>
+            <div id="selected-file-name" data-i18n="noFileSelected">No file selected.</div>
+            <div id="selected-file-info"></div>
+          </div>
+        </section>
+
+        <section class="step-block">
+          <div class="step-head"><span class="step-num">2</span><span data-i18n="stepDirTitle">Working directory</span></div>
+          <div class="step-note" data-i18n="stepDirNote">FDS computes in this directory and writes its .out and .csv output there. "Results" returns exactly this directory as a ZIP.</div>
+
+          <div id="upload-target-fields">
+            <div class="field">
+              <label for="upload-folder-name" data-i18n="uploadFolderLabel">Target folder</label>
+              <input id="upload-folder-name" type="text" data-i18n-placeholder="uploadFolderPlaceholder" placeholder="derived from the file name" />
+            </div>
+            <div class="field">
+              <label for="upload-parent-select" data-i18n="uploadParentLabel">Create in</label>
+              <select id="upload-parent-select">
+                <option value="default" data-i18n="uploadParentDefault">upload directory</option>
+                <option value="browsed" data-i18n="uploadParentBrowsed">the browsed directory</option>
+              </select>
+            </div>
+            <div id="upload-target-path" class="hint"></div>
+          </div>
+
+          <div id="fixed-target-path" class="hint" hidden></div>
+        </section>
+
+        <section class="step-block">
+          <div class="step-head"><span class="step-num">3</span><span data-i18n="stepProcessesTitle">MPI processes</span></div>
+          <div id="mpi-row" class="field">
+            <label for="mpi-processes" data-i18n="mpiProcessesLabel">MPI processes</label>
+            <input id="mpi-processes" type="number" min="1" value="1" />
+            <span id="mpi-hint" class="hint"></span>
+          </div>
+        </section>
+
       </div>
       <div class="dialog-actions">
         <button id="new-job-cancel" class="secondary" data-i18n="cancel">Cancel</button>
-        <button id="new-job-submit" data-i18n="enqueue" disabled>Enqueue</button>
+        <button id="new-job-submit" data-i18n="enqueue" disabled>Add to queue</button>
       </div>
     </div>
   </div>
@@ -225,6 +254,18 @@
           <span id="ha-test-result" class="hint"></span>
         </div>
 
+      </div>
+      <div class="dialog-actions">
+        <button id="settings-close" class="secondary" data-i18n="close">Close</button>
+        <button id="settings-save" data-i18n="save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="operations-overlay" class="overlay" hidden>
+    <div class="dialog">
+      <div class="dialog-head"><h2 data-i18n="operationsModalTitle">Operations</h2></div>
+      <div class="dialog-body">
         <div class="sub-head" data-i18n="serviceSettingsTitle">Service</div>
         <div class="field">
           <label data-i18n="serviceVersionLabel">Version</label>
@@ -242,8 +283,7 @@
         </div>
       </div>
       <div class="dialog-actions">
-        <button id="settings-close" class="secondary" data-i18n="close">Close</button>
-        <button id="settings-save" data-i18n="save">Save</button>
+        <button id="operations-close" class="secondary" data-i18n="close">Close</button>
       </div>
     </div>
   </div>

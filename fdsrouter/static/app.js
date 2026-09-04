@@ -10,6 +10,8 @@ const state = {
   knownDevices: [], // [{name, unit}] from the job's CHID_devc.csv
   deviceListPending: false,
   lastSimTime: null,
+  // Last .out sample, so a rebuilt job card can be refilled without waiting for the next one.
+  lastOut: null,
   expandedHistoryIds: new Set(),
   jobMetricsCache: new Map(),
   autoAdvance: false,
@@ -24,14 +26,18 @@ const state = {
   // Whether this instance is managed by systemd, plus its revision -- drives the service
   // section of the settings dialog.
   serviceStatus: null,
-  // The history panel shows either the current runs or the archive; archived runs are not
-  // part of the regular job payload and are fetched on demand.
-  showArchive: false,
+  // Queue, history and archive are one list with a filter, not three panels. The archive is
+  // not part of the regular job payload and is fetched when its filter is picked.
+  filter: "all",
+  search: "",
   archivedJobs: [],
 };
 
 const modalState = {
   selectedFilePath: null,
+  // Whether the selected file was just uploaded (then the working directory was chosen here)
+  // or picked on the server (then it is the file's own directory).
+  selectedFromUpload: false,
   meshInfo: null,
   // Where an upload creates its working directory: the configured upload_dir, or the directory
   // currently open in the server browser.
@@ -158,6 +164,7 @@ function setLastBrowsePath(path) {
 
 function openNewJobModal() {
   modalState.selectedFilePath = null;
+  modalState.selectedFromUpload = false;
   modalState.meshInfo = null;
   el("selected-file-name").textContent = t("noFileSelected");
   el("selected-file-info").textContent = "";
@@ -167,6 +174,7 @@ function openNewJobModal() {
   el("upload-btn").disabled = true;
   el("upload-status").textContent = t("uploadHint");
   el("upload-folder-name").value = "";
+  updateWorkingDirStep();
   el("new-job-overlay").hidden = false;
   loadUploadRoot();
   browse(getLastBrowsePath());
@@ -216,8 +224,10 @@ async function browse(path) {
   }
 }
 
-async function selectFile(path, liEl = null) {
+async function selectFile(path, liEl = null, fromUpload = false) {
   modalState.selectedFilePath = path;
+  modalState.selectedFromUpload = fromUpload;
+  updateWorkingDirStep();
   document.querySelectorAll("#browser-list li.selected").forEach((n) => n.classList.remove("selected"));
   if (liEl) liEl.classList.add("selected");
 
@@ -246,6 +256,22 @@ async function selectFile(path, liEl = null) {
   } catch (e) {
     el("selected-file-info").textContent = e.message;
   }
+}
+
+/** Step 2 has two truths: for an uploaded case the operator picks the working directory, for a
+ *  file already on the server it is that file's own directory and cannot be chosen. */
+function updateWorkingDirStep() {
+  const picked = modalState.selectedFilePath;
+  const fromUpload = picked && modalState.selectedFromUpload;
+  const showFields = !picked || fromUpload;
+  el("upload-target-fields").hidden = !showFields;
+  const fixed = el("fixed-target-path");
+  fixed.hidden = showFields;
+  if (!showFields) {
+    const dir = picked.slice(0, picked.lastIndexOf("/")) || "/";
+    fixed.textContent = t("workingDirFromFile", { path: dir });
+  }
+  if (showFields) updateUploadTargetHint();
 }
 
 /** The configured upload_dir, shown as the default location for the new working directory. */
@@ -324,7 +350,7 @@ async function startUpload() {
     });
     status.textContent = t("uploadDone", { dir: result.case_dir });
     // Continue exactly as if the uploaded file had been picked in the server browser.
-    await selectFile(result.fds_file_path);
+    await selectFile(result.fds_file_path, null, true);
     await browse(result.case_dir);
   } catch (e) {
     status.textContent = t("uploadFailed", { error: e.message });
@@ -366,12 +392,20 @@ async function openSettingsModal() {
   } catch (e) {
     // settings are optional -- an unreachable backend just leaves the form empty
   }
-  loadServiceStatus();
   el("settings-overlay").hidden = false;
 }
 
 function closeSettingsModal() {
   el("settings-overlay").hidden = true;
+}
+
+function openOperationsModal() {
+  loadServiceStatus();
+  el("operations-overlay").hidden = false;
+}
+
+function closeOperationsModal() {
+  el("operations-overlay").hidden = true;
 }
 
 function onLanguageChange(lang) {
@@ -841,9 +875,12 @@ async function refreshArchivedJobs() {
   renderJobs();
 }
 
-function onArchiveViewToggle(enabled) {
-  state.showArchive = enabled;
-  if (enabled) refreshArchivedJobs();
+function setRunFilter(filter) {
+  state.filter = filter;
+  document.querySelectorAll("#status-filter .chip").forEach((chip) => {
+    chip.classList.toggle("selected", chip.dataset.filter === filter);
+  });
+  if (filter === "archive") refreshArchivedJobs();
   else renderJobs();
 }
 
@@ -858,7 +895,7 @@ async function archiveFinishedJobs() {
   if (!confirm(t("archiveConfirm", { count: finished.length }))) return;
   try {
     await apiSend("/api/jobs/archive", "POST");
-    if (state.showArchive) await refreshArchivedJobs();
+    if (state.filter === "archive") await refreshArchivedJobs();
   } catch (e) {
     alert(t("archiveFailed", { error: e.message }));
   }
@@ -887,41 +924,120 @@ function statusLabel(status) {
   return key ? t(key) : status;
 }
 
-function renderJobs() {
-  const jobs = state.jobs;
-  const running = jobs.find((j) => j.status === "running");
-  const queued = jobs.filter((j) => j.status === "queued").sort((a, b) => a.queue_position - b.queue_position);
-  const finished = jobs.filter((j) => ["done", "failed", "cancelled"].includes(j.status));
-  const history = state.showArchive ? state.archivedJobs : finished.slice(0, 15);
+/** Which runs the current filter and search let through. */
+function visibleJobs() {
+  const source = state.filter === "archive" ? state.archivedJobs : state.jobs;
+  const byStatus = {
+    all: () => true,
+    queued: (job) => job.status === "queued",
+    running: (job) => job.status === "running",
+    done: (job) => job.status === "done",
+    failed: (job) => ["failed", "cancelled"].includes(job.status),
+    archive: () => true,
+  }[state.filter];
 
+  const needle = state.search.trim().toLowerCase();
+  return source.filter(
+    (job) =>
+      byStatus(job) &&
+      (!needle ||
+        job.name.toLowerCase().includes(needle) ||
+        (job.fds_file_path || "").toLowerCase().includes(needle))
+  );
+}
+
+/** Reordering rewrites the whole queue order, so it is only safe while every waiting run is
+ *  actually on screen -- otherwise a hidden job would silently lose its place. */
+function reorderAllowed() {
+  return state.filter !== "archive" && !state.search.trim();
+}
+
+function renderJobs() {
+  const running = state.jobs.find((j) => j.status === "running");
   const previousRunning = state.runningJobId;
   state.runningJobId = running ? running.id : null;
   if (state.runningJobId !== previousRunning) state.lastSimTime = null;
 
-  const queueList = el("queue-list");
-  queueList.innerHTML = "";
-  if (running) queueList.appendChild(renderRunningCard(running));
-  if (queued.length === 0 && !running) {
-    queueList.innerHTML = `<li class="note">${t("queueEmpty")}</li>`;
-  } else {
-    queued.forEach((job, i) => queueList.appendChild(renderQueuedCard(job, !running && i === 0, i + 1)));
-  }
-  if (running) drawLivePlot();
+  // Position in the queue is a property of the queue, not of the current filter -- numbering
+  // the filtered rows would tell a searching operator the wrong place in line.
+  const queueOrder = state.jobs
+    .filter((j) => j.status === "queued")
+    .sort((a, b) => a.queue_position - b.queue_position)
+    .map((j) => j.id);
 
-  const historyList = el("history-list");
-  historyList.innerHTML = "";
-  if (history.length === 0) {
-    historyList.innerHTML = `<li class="note">${t(state.showArchive ? "archiveEmpty" : "historyEmpty")}</li>`;
-  } else {
-    for (const job of history) historyList.appendChild(renderHistoryCard(job));
+  const visible = visibleJobs();
+  const runningVisible = visible.filter((j) => j.status === "running");
+  const queued = visible
+    .filter((j) => j.status === "queued")
+    .sort((a, b) => a.queue_position - b.queue_position);
+  const finished = visible
+    .filter((j) => ["done", "failed", "cancelled"].includes(j.status))
+    .sort((a, b) => (b.finished_at || "").localeCompare(a.finished_at || ""));
+
+  const list = el("runs-list");
+  list.innerHTML = "";
+  setText("runs-count", String(visible.length));
+
+  for (const job of runningVisible) list.appendChild(renderRunningCard(job));
+
+  if (queued.length) {
+    list.appendChild(groupHeading(t("groupWaiting", { count: queued.length }), !reorderAllowed() ? t("reorderLocked") : null));
+    queued.forEach((job) =>
+      list.appendChild(renderQueuedCard(job, !running && queueOrder[0] === job.id, queueOrder.indexOf(job.id) + 1))
+    );
   }
 
-  // Nothing in the archive view can be archived again, so the action hides there.
+  if (finished.length) {
+    const label = state.filter === "archive" ? t("groupArchived", { count: finished.length }) : t("groupFinished", { count: finished.length });
+    list.appendChild(groupHeading(label, null));
+    for (const job of finished) list.appendChild(renderHistoryCard(job));
+  }
+
+  if (!list.children.length) list.appendChild(renderEmptyState());
+  if (running && runningVisible.length) {
+    drawLivePlot();
+    // The card was just rebuilt from scratch; without this every live readout would fall back
+    // to its placeholder until the next sample arrives.
+    if (state.lastOut) applyLiveOut(state.lastOut);
+    if (state.lastSimTime != null) updateProgress(state.lastSimTime);
+  }
+
   const archiveBtn = el("archive-btn");
-  archiveBtn.hidden = state.showArchive;
-  archiveBtn.disabled = finished.length === 0;
+  const archivable = state.jobs.filter((j) => ["done", "failed", "cancelled"].includes(j.status));
+  archiveBtn.hidden = state.filter === "archive";
+  archiveBtn.disabled = archivable.length === 0;
 
   updateDashboardVisibility();
+}
+
+function groupHeading(label, note) {
+  const li = document.createElement("li");
+  li.className = "group-head";
+  li.innerHTML = `<span>${esc(label)}</span>${note ? `<span class="group-note">${esc(note)}</span>` : ""}`;
+  return li;
+}
+
+/** An empty list should say what to do next, not just that it is empty. */
+function renderEmptyState() {
+  const li = document.createElement("li");
+  li.className = "empty-state";
+  const filtered = state.search.trim() || state.filter !== "all";
+  li.innerHTML = `<p>${esc(filtered ? t("emptyFiltered") : t("emptyNoRuns"))}</p>`;
+
+  const button = document.createElement("button");
+  button.className = filtered ? "secondary small" : "small";
+  button.textContent = filtered ? t("emptyClearFilter") : t("emptyAddRun");
+  button.onclick = () => {
+    if (filtered) {
+      el("runs-search").value = "";
+      state.search = "";
+      setRunFilter("all");
+    } else {
+      openNewJobModal();
+    }
+  };
+  li.appendChild(button);
+  return li;
 }
 
 function renderRunningCard(job) {
@@ -938,6 +1054,7 @@ function renderRunningCard(job) {
       mpi: job.mpi_process_count,
       cells: job.mesh_cell_count ?? t("unknownValue"),
     }))}</div>
+    <div class="verdict" id="run-verdict">${esc(t("verdictStarting"))}</div>
     <div class="live-row">
       <span class="live-item"><span class="k">${t("liveElapsed")}</span><span class="v" id="run-elapsed">–</span></span>
       <span class="live-item"><span class="k">${t("liveRemaining")}</span><span class="v" id="run-remaining">–</span></span>
@@ -989,7 +1106,7 @@ function renderRunningCard(job) {
 function renderQueuedCard(job, isNext, position) {
   const li = document.createElement("li");
   li.className = "job queued";
-  li.draggable = true;
+  li.draggable = reorderAllowed();
   li.dataset.jobId = job.id;
   li.innerHTML = `
     <div class="job-head">
@@ -1134,8 +1251,8 @@ function attachDragHandlers(li) {
     const draggedId = ev.dataTransfer.getData("text/plain");
     if (!draggedId || draggedId === li.dataset.jobId) return;
 
-    const queueList = el("queue-list");
-    const cards = Array.from(queueList.querySelectorAll("li.job.queued"));
+    if (!reorderAllowed()) return;
+    const cards = Array.from(el("runs-list").querySelectorAll("li.job.queued"));
     const orderedIds = cards.map((c) => c.dataset.jobId);
     const fromIdx = orderedIds.indexOf(draggedId);
     const toIdx = orderedIds.indexOf(li.dataset.jobId);
@@ -1188,12 +1305,8 @@ function handleJobMetrics(msg) {
   renderDeviceTable(devices);
 
   if (msg.out) {
-    setText("run-simtime", msg.out.simulation_time_s != null ? msg.out.simulation_time_s.toFixed(2) : "–");
-    setText("run-hrr", msg.out.total_hrr_kw != null ? msg.out.total_hrr_kw.toFixed(1) : "–");
-    setText(
-      "limiting-mesh",
-      msg.out.limiting_mesh != null ? t("limitingMeshValue", { mesh: msg.out.limiting_mesh }) : t("unknownValue")
-    );
+    state.lastOut = msg.out;
+    applyLiveOut(msg.out);
 
     const simTime = msg.out.simulation_time_s;
     if (simTime != null && msg.out.total_hrr_kw != null) {
@@ -1219,6 +1332,20 @@ const MAX_PLOT_SAMPLES = 2000;
 /** The collapsible DEVC panel: every measurement point with its live value, and a click to
  *  put that device on the plot -- the same thing the signal select does, but from the list the
  *  operator is already reading. */
+/** Fill the running card's readouts from one .out sample.
+ *
+ *  Separate from the metrics handler because the card is rebuilt on every queue update: without
+ *  re-applying the last sample, simulation time, HRR and the verdict would fall back to their
+ *  placeholders for up to one polling interval. */
+function applyLiveOut(out) {
+  setText("run-simtime", out.simulation_time_s != null ? out.simulation_time_s.toFixed(2) : "–");
+  setText("run-hrr", out.total_hrr_kw != null ? out.total_hrr_kw.toFixed(1) : "–");
+  setText(
+    "limiting-mesh",
+    out.limiting_mesh != null ? t("limitingMeshValue", { mesh: out.limiting_mesh }) : t("unknownValue")
+  );
+}
+
 function renderDeviceTable(devices) {
   const tbody = el("devc-tbody");
   if (!tbody) return;
@@ -1288,7 +1415,30 @@ function updateProgress(simTime) {
     const elapsedS = (Date.now() - Date.parse(job.started_at)) / 1000;
     const remainingS = (elapsedS * (1 - fraction)) / fraction;
     setText("run-remaining", fmtDuration(remainingS));
+    updateRunVerdict(remainingS);
   }
+}
+
+/** A clock time, with the date attached once the run reaches into another day. */
+function formatClock(date) {
+  const time = date.toLocaleTimeString(getLang(), { hour: "2-digit", minute: "2-digit" });
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay ? time : `${date.toLocaleDateString(getLang(), { day: "2-digit", month: "2-digit" })} ${time}`;
+}
+
+/** The one line that answers "how is it going?" before any of the detail readouts.
+ *
+ *  Expressed as a point in time, because that is the decision hanging on it -- "done by 17:40"
+ *  needs no arithmetic, "3 h 12 min left" does. */
+function updateRunVerdict(remainingS) {
+  const verdict = el("run-verdict");
+  if (!verdict) return;
+  if (remainingS == null || !isFinite(remainingS)) {
+    verdict.textContent = t("verdictStarting");
+    return;
+  }
+  const end = new Date(Date.now() + remainingS * 1000);
+  verdict.textContent = t("verdictEta", { clock: formatClock(end), remaining: fmtDuration(remainingS) });
 }
 
 function tickElapsedAndRemaining() {
@@ -1533,6 +1683,7 @@ async function loadJobHistoryForChart(jobId) {
   // A new job means new devices -- start from HRR, which every case has.
   state.hrrHistory = [];
   state.deviceHistory = [];
+  state.lastOut = null;
   state.plotSignal = { kind: "hrr", device: null, unit: "kW" };
   syncPlotSignalOptions([]);
   updatePlotCaption();
@@ -1686,7 +1837,21 @@ el("console-overlay").addEventListener("click", (ev) => {
 
 el("auto-advance-toggle").addEventListener("change", (ev) => onAutoAdvanceToggle(ev.target.checked));
 el("archive-btn").addEventListener("click", archiveFinishedJobs);
-el("archive-view-toggle").addEventListener("change", (ev) => onArchiveViewToggle(ev.target.checked));
+
+document.querySelectorAll("#status-filter .chip").forEach((chip) => {
+  chip.addEventListener("click", () => setRunFilter(chip.dataset.filter));
+});
+
+el("runs-search").addEventListener("input", (ev) => {
+  state.search = ev.target.value;
+  renderJobs();
+});
+
+el("operations-btn").addEventListener("click", openOperationsModal);
+el("operations-close").addEventListener("click", closeOperationsModal);
+el("operations-overlay").addEventListener("click", (ev) => {
+  if (ev.target === el("operations-overlay")) closeOperationsModal();
+});
 
 setTheme(getTheme());
 applyStaticTranslations();
