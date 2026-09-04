@@ -20,7 +20,7 @@ async def _noop_broadcast(message):
 def manager(tmp_path):
     config = Config(project_dir=tmp_path, data_dir=tmp_path)
     db = Database(tmp_path / "test.db")
-    db.upsert_node("node-1", "local-host", "darwin", 4, 8192)
+    db.upsert_node("node-1", "local-host", "darwin", 4, 8192, True)
     return QueueManager(config, db, "node-1", _noop_broadcast, SystemState())
 
 
@@ -45,7 +45,7 @@ def test_solo_install_assigns_a_fresh_job_to_the_local_node(manager, tmp_path):
 
 def test_job_too_big_for_local_node_goes_to_a_bigger_remote_node(manager, tmp_path):
     async def scenario():
-        manager.db.upsert_node("node-2", "big-host", "linux", 16, 65536)
+        manager.db.upsert_node("node-2", "big-host", "linux", 16, 65536, True)
         case = _write_case(tmp_path, "big")
         job = await manager.enqueue(name="big", fds_file_path=case, mpi_processes=1)
         # Force a process count the local 4-core node can't take.
@@ -60,7 +60,7 @@ def test_job_too_big_for_local_node_goes_to_a_bigger_remote_node(manager, tmp_pa
 
 def test_busy_node_is_skipped_in_favour_of_an_idle_one(manager, tmp_path):
     async def scenario():
-        manager.db.upsert_node("node-2", "idle-host", "linux", 4, 8192)
+        manager.db.upsert_node("node-2", "idle-host", "linux", 4, 8192, True)
         busy_case = _write_case(tmp_path, "busy")
         busy_job = await manager.enqueue(name="busy", fds_file_path=busy_case)
         manager.db.assign_job_to_node(busy_job["id"], "node-1")
@@ -91,7 +91,7 @@ def test_no_eligible_node_leaves_the_job_unassigned(manager, tmp_path):
 
 def test_stale_sweep_finalizes_a_hung_remote_job_as_failed(manager, tmp_path):
     async def scenario():
-        manager.db.upsert_node("node-2", "dead-host", "linux", 4, 8192)
+        manager.db.upsert_node("node-2", "dead-host", "linux", 4, 8192, True)
         case = _write_case(tmp_path, "remote")
         job = await manager.enqueue(name="remote", fds_file_path=case)
         manager.db.assign_job_to_node(job["id"], "node-2")
@@ -112,7 +112,7 @@ def test_manual_start_on_a_remote_job_marks_it_requested_instead_of_running_it_l
     that agent besides its own poll -- so this must only flag it, never spawn a local process."""
 
     async def scenario():
-        manager.db.upsert_node("node-2", "remote-host", "linux", 8, 16384)
+        manager.db.upsert_node("node-2", "remote-host", "linux", 8, 16384, True)
         case = _write_case(tmp_path, "remote")
         job = await manager.enqueue(name="remote", fds_file_path=case)
         manager.db.assign_job_to_node(job["id"], "node-2")

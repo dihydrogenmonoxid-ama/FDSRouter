@@ -63,19 +63,26 @@ class Database:
             if column not in columns:
                 self.conn.execute(ddl)
 
+        node_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(node)")}
+        if "fds_ready" not in node_columns:
+            self.conn.execute("ALTER TABLE node ADD COLUMN fds_ready INTEGER NOT NULL DEFAULT 0")
+
     # -- Node -----------------------------------------------------------------
 
-    def upsert_node(self, node_id: str, hostname: str, os_name: str, cpu_cores: int, ram_total_mb: int) -> None:
+    def upsert_node(
+        self, node_id: str, hostname: str, os_name: str, cpu_cores: int, ram_total_mb: int, fds_ready: bool = False
+    ) -> None:
         with self._lock, self.conn:
             self.conn.execute(
                 """
-                INSERT INTO node (id, hostname, os, cpu_cores, ram_total_mb, status, last_heartbeat)
-                VALUES (?, ?, ?, ?, ?, 'online', ?)
+                INSERT INTO node (id, hostname, os, cpu_cores, ram_total_mb, status, last_heartbeat, fds_ready)
+                VALUES (?, ?, ?, ?, ?, 'online', ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     hostname=excluded.hostname, os=excluded.os, cpu_cores=excluded.cpu_cores,
-                    ram_total_mb=excluded.ram_total_mb, status='online', last_heartbeat=excluded.last_heartbeat
+                    ram_total_mb=excluded.ram_total_mb, status='online', last_heartbeat=excluded.last_heartbeat,
+                    fds_ready=excluded.fds_ready
                 """,
-                (node_id, hostname, os_name, cpu_cores, ram_total_mb, _now()),
+                (node_id, hostname, os_name, cpu_cores, ram_total_mb, _now(), int(fds_ready)),
             )
 
     def heartbeat_node(self, node_id: str) -> None:

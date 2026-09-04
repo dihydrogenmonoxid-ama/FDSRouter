@@ -63,6 +63,7 @@ def create_app(config: Config) -> FastAPI:
             # the core count that actually helps.
             cpu_cores=psutil.cpu_count(logical=False) or psutil.cpu_count(logical=True) or 1,
             ram_total_mb=int(psutil.virtual_memory().total / (1024 * 1024)),
+            fds_ready=bool(config.fds_binary and config.mpi_executable),
         )
 
         ws_manager = ConnectionManager()

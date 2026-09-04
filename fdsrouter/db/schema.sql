@@ -7,7 +7,11 @@ CREATE TABLE IF NOT EXISTS node (
     cpu_cores INTEGER NOT NULL,
     ram_total_mb INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'offline' CHECK (status IN ('online', 'offline')),
-    last_heartbeat TEXT
+    last_heartbeat TEXT,
+    -- Whether this node's own config.yaml/agent-config.yaml has fds_binary and mpi_executable
+    -- both set -- reported at registration time. A node can be online but not fds_ready (e.g. a
+    -- Controller-only install with no local FDS), and the scheduler must never assign it a job.
+    fds_ready INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS job (

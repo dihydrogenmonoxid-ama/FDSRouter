@@ -33,6 +33,9 @@ def pick_node_for_job(job: dict, nodes: list[dict], busy_node_ids: set[str], now
         if node["id"] not in busy_node_ids
         and node["cpu_cores"] >= required_cores
         and is_node_online(node, now)
+        # A node without fds_binary/mpi_executable configured would just fail the job
+        # immediately -- never worth assigning to, no matter how idle or well-sized it is.
+        and node.get("fds_ready")
     ]
     if not eligible:
         return None

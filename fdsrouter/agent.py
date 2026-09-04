@@ -138,6 +138,7 @@ class Agent:
                 # MPI-per-mesh model doesn't benefit from hyperthreading.
                 "cpu_cores": psutil.cpu_count(logical=False) or psutil.cpu_count(logical=True) or 1,
                 "ram_total_mb": int(psutil.virtual_memory().total / (1024 * 1024)),
+                "fds_ready": bool(self.config.fds_binary and self.config.mpi_executable),
             },
         )
 

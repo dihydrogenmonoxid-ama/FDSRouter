@@ -12,6 +12,8 @@ const STRINGS = {
     nodeIdle: "frei",
     nodeAssigned: "{name}",
     nodeAssigning: "wird zugewiesen…",
+    nodeNotReady: "nicht konfiguriert",
+    nodeNotReadyTitle: "fds_binary/mpi_executable sind auf diesem Knoten nicht gesetzt -- er erhält keine Läufe zugewiesen",
 
     newJob: "Neuer Job",
     settings: "Einstellungen",
@@ -331,6 +333,8 @@ const STRINGS = {
     nodeIdle: "idle",
     nodeAssigned: "{name}",
     nodeAssigning: "assigning…",
+    nodeNotReady: "not configured",
+    nodeNotReadyTitle: "fds_binary/mpi_executable are not set on this node -- it won't be assigned any runs",
 
     newJob: "New Job",
     settings: "Settings",

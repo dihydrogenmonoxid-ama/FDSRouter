@@ -6,7 +6,7 @@ from fdsrouter.db.database import Database
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "test.db")
-    database.upsert_node("node-1", "testhost", "darwin", 8, 16384)
+    database.upsert_node("node-1", "testhost", "darwin", 8, 16384, True)
     return database
 
 

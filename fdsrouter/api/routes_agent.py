@@ -33,6 +33,7 @@ class AgentRegistration(BaseModel):
     os: str
     cpu_cores: int
     ram_total_mb: int
+    fds_ready: bool = False
 
 
 class StartPayload(BaseModel):
@@ -70,7 +71,7 @@ def _require_job(job_id: str, request: Request) -> dict:
 @router.post("/register")
 def register(payload: AgentRegistration, request: Request) -> dict:
     request.app.state.db.upsert_node(
-        payload.id, payload.hostname, payload.os, payload.cpu_cores, payload.ram_total_mb
+        payload.id, payload.hostname, payload.os, payload.cpu_cores, payload.ram_total_mb, payload.fds_ready
     )
     return {"ok": True}
 

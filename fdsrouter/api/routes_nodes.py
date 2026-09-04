@@ -19,6 +19,9 @@ class NodeRegistration(BaseModel):
     os: str
     cpu_cores: int
     ram_total_mb: int
+    # Whether this node's own fds_binary/mpi_executable are both configured -- a node can be
+    # online but not ready to actually run anything (e.g. a Controller with no local FDS).
+    fds_ready: bool = False
 
 
 @router.get("")
@@ -30,13 +33,16 @@ def list_nodes(request: Request) -> list[dict]:
     nodes = request.app.state.db.get_nodes()
     for node in nodes:
         node["online"] = scheduler.is_node_online(node, now)
+        node["fds_ready"] = bool(node["fds_ready"])  # SQLite gives back 0/1, not a JSON bool
     return nodes
 
 
 @router.post("/register")
 def register_node(payload: NodeRegistration, request: Request) -> dict:
     db = request.app.state.db
-    db.upsert_node(payload.id, payload.hostname, payload.os, payload.cpu_cores, payload.ram_total_mb)
+    db.upsert_node(
+        payload.id, payload.hostname, payload.os, payload.cpu_cores, payload.ram_total_mb, payload.fds_ready
+    )
     return {"ok": True}
 
 

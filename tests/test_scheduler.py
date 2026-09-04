@@ -7,9 +7,9 @@ from fdsrouter.core import scheduler
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _node(id, cores=8, heartbeat_age_s=0):
+def _node(id, cores=8, heartbeat_age_s=0, fds_ready=True):
     heartbeat = (NOW - timedelta(seconds=heartbeat_age_s)).isoformat()
-    return {"id": id, "cpu_cores": cores, "last_heartbeat": heartbeat}
+    return {"id": id, "cpu_cores": cores, "last_heartbeat": heartbeat, "fds_ready": fds_ready}
 
 
 def _job(mpi=4):
@@ -68,3 +68,15 @@ def test_only_the_eligible_one_among_several_is_picked():
     nodes = [_node("busy", cores=16), _node("small", cores=1), _node("winner", cores=8)]
     result = scheduler.pick_node_for_job(_job(mpi=4), nodes, busy_node_ids={"busy"}, now=NOW)
     assert result == "winner"
+
+
+def test_node_without_fds_configured_is_excluded():
+    """A node with no fds_binary/mpi_executable set would just fail the job immediately --
+    never worth assigning to, however idle or well-sized it is."""
+    nodes = [_node("not-ready", fds_ready=False)]
+    assert scheduler.pick_node_for_job(_job(), nodes, busy_node_ids=set(), now=NOW) is None
+
+
+def test_ready_node_is_preferred_over_a_bigger_unready_one():
+    nodes = [_node("big-unready", cores=32, fds_ready=False), _node("small-ready", cores=4)]
+    assert scheduler.pick_node_for_job(_job(), nodes, busy_node_ids=set(), now=NOW) == "small-ready"

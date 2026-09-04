@@ -22,7 +22,7 @@ def manager(tmp_path):
     # what these tests need to observe ("did it attempt to start or not").
     config = Config(project_dir=tmp_path, data_dir=tmp_path)
     db = Database(tmp_path / "test.db")
-    db.upsert_node("node-1", "testhost", "darwin", 8, 16384)
+    db.upsert_node("node-1", "testhost", "darwin", 8, 16384, True)
     return QueueManager(config, db, "node-1", _noop_broadcast, SystemState())
 
 

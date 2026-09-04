@@ -289,16 +289,14 @@ function renderNodeStatusSummary() {
   el("node-status").innerHTML = `<span class="dot"></span>` + esc(t("nodeClusterSummary", { online, total: nodes.length }));
 }
 
-/** Per-node detail list -- only shown once a second node has ever registered, so a solo
- *  installation's UI looks exactly as it did before clustering existed. */
+/** Device overview -- every node that has ever registered, always shown (including the local
+ *  machine on its own, before any agent ever joins), so it doubles as "is this machine even
+ *  usable for runs?" at a glance rather than only appearing once a cluster exists. */
 function renderNodeList() {
   const container = el("node-list");
   const nodes = state.nodes;
-  if (nodes.length <= 1) {
-    el("node-list-panel").hidden = true;
-    return;
-  }
-  el("node-list-panel").hidden = false;
+  el("node-list-panel").hidden = nodes.length === 0;
+  if (nodes.length === 0) return;
 
   const runningByNode = new Map();
   for (const job of state.jobs) {
@@ -309,12 +307,18 @@ function renderNodeList() {
     .map((node) => {
       const running = runningByNode.get(node.id);
       const jobLine = running ? esc(t("nodeRunning", { name: running.name })) : esc(t("nodeIdle"));
+      // Online but not configured to run FDS at all (e.g. a Controller-only install with no
+      // local fds_binary) -- worth calling out, since the scheduler will never hand it a job.
+      const readyBadge = node.fds_ready
+        ? ""
+        : `<span class="node-badge" title="${esc(t("nodeNotReadyTitle"))}">${esc(t("nodeNotReady"))}</span>`;
       return `<div class="node-row ${node.online ? "online" : "offline"}">
         <span class="dot"></span>
         <span class="node-name">${esc(node.hostname)}</span>
         <span class="node-meta">${esc(
           t("nodeCoresRam", { cores: node.cpu_cores, ram: Math.round(node.ram_total_mb / 1024) })
         )}</span>
+        ${readyBadge}
         <span class="node-job">${jobLine}</span>
       </div>`;
     })

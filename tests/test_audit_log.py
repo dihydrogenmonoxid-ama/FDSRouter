@@ -19,7 +19,7 @@ async def _noop_broadcast(message):
 def manager(tmp_path):
     config = Config(project_dir=tmp_path, data_dir=tmp_path)
     db = Database(tmp_path / "test.db")
-    db.upsert_node("node-1", "testhost", "darwin", 8, 16384)
+    db.upsert_node("node-1", "testhost", "darwin", 8, 16384, True)
     return QueueManager(config, db, "node-1", _noop_broadcast, SystemState())
 
 
@@ -76,7 +76,7 @@ def test_reorder_and_archive_log_without_a_job_id(manager, tmp_path):
 def test_run_finishing_on_its_own_logs_with_no_actor(manager, tmp_path):
     """A job reaching a terminal state by itself (not stopped/cancelled by a user) is still
     audit-logged, but with username=None -- distinguishing "the system" from "nobody logged"."""
-    manager.db.upsert_node("node-1", "testhost", "darwin", 8, 16384)
+    manager.db.upsert_node("node-1", "testhost", "darwin", 8, 16384, True)
     job = manager.db.create_job(
         name="d", fds_file_path="/tmp/d.fds", node_id="node-1", mesh_cell_count=8,
         sim_end_time_s=1.0, mpi_process_count=1, estimated_duration_s=None,
