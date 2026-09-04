@@ -28,8 +28,9 @@ who no longer want to babysit the queue by hand.
 
 - **Runs across the network** — the service runs on the machine that computes; it is operated
   from a browser on any workstation on the same network (set `host: "0.0.0.0"`). Cases can be
-  **uploaded** from the workstation and the result directory **downloaded** again as a ZIP — no
-  terminal access to the compute node required
+  **uploaded** from the workstation — including a newly created, self-named working directory on
+  the compute node — and the result directory **downloaded** again as a ZIP; no terminal access
+  to the compute node required
 - **Queue management** — add `.fds` files through a server-side file browser and reorder them by
   drag & drop, including while a run is already active (only the running job is pinned, every
   waiting job stays reorderable at any time)
@@ -229,8 +230,20 @@ runs as a service, the change takes effect after `systemctl --user restart fdsro
 
 The interface is then available at `http://<server-ip>:8000/`. Cases are uploaded through
 "Neuer Job → Vom Rechner hochladen" (exactly one `.fds` file, further case files such as ramps
-or includes optional); FDS computes in the created upload directory, and the "Ergebnisse" button
-on a job card returns the result directory as a ZIP.
+or includes optional).
+
+The upload creates a new directory on the compute node: this is the working directory FDS runs
+in and writes its `.out` and `.csv` output to, and it is exactly what the "Ergebnisse" button on
+a job card returns as a ZIP. Two fields control it:
+
+- **Target folder** — the name of the new directory. Prefilled from the `.fds` file name and
+  freely editable; leaving it empty falls back to an automatic name built from a timestamp and
+  the case name. An existing folder is refused, so two cases never share one result directory.
+- **Create in** — either the `upload_dir` configured in `config.yaml`, or the directory
+  currently open in the file browser below. That puts the case straight into an existing project
+  structure on the server.
+
+The line underneath spells out the full path that will be created.
 
 **FDSRouter has no user management yet.** Anyone who can reach the interface can enqueue and
 stop jobs — and restart, update or stop the service from the settings dialog. So it belongs on

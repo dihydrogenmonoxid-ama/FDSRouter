@@ -34,6 +34,28 @@ def safe_filename(name: str) -> str:
     return (base or _FALLBACK_NAME)[:MAX_FILENAME_LENGTH]
 
 
+class CaseDirExistsError(FileExistsError):
+    """The operator asked for a folder name that is already taken in the target directory."""
+
+
+def create_named_case_dir(parent: Path, folder_name: str) -> Path:
+    """Create exactly the working directory the operator named, below parent.
+
+    Named rather than timestamped, because this directory is what FDS writes its results into
+    and what comes back through "Ergebnisse" -- a name the operator chose ("Atrium_v3") is worth
+    much more there than "20260904-101530_atrium". It must not exist yet: uploading a second
+    case into a directory that already holds one would mix two result sets into one download.
+    """
+    if not folder_name.strip():
+        raise ValueError("Ordnername fehlt")
+    target = parent / safe_filename(folder_name)
+    try:
+        target.mkdir(parents=True)
+    except FileExistsError as exc:
+        raise CaseDirExistsError(str(target)) from exc
+    return target
+
+
 def create_case_dir(upload_root: Path, case_name: str) -> Path:
     """A fresh, timestamped directory for one uploaded case."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

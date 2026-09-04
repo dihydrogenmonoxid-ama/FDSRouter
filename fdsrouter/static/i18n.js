@@ -107,6 +107,13 @@ const STRINGS = {
     browseSectionTitle: "Auf dem Server auswählen",
     uploadButton: "Hochladen",
     uploadHint: "Genau eine .fds-Datei, weitere Falldateien optional.",
+    uploadFolderLabel: "Zielordner",
+    uploadFolderPlaceholder: "automatisch aus Dateiname",
+    uploadParentLabel: "Anlegen in",
+    uploadParentDefault: "Upload-Verzeichnis",
+    uploadParentBrowsed: "geöffnetem Verzeichnis",
+    uploadTargetHint: "Arbeitsverzeichnis: {path}",
+    uploadTargetAuto: "<automatisch>",
     uploadRunning: "Übertrage… {percent} %",
     uploadDone: "Hochgeladen nach {dir}",
     uploadFailed: "Upload fehlgeschlagen: {error}",
@@ -279,6 +286,13 @@ const STRINGS = {
     browseSectionTitle: "Choose on the server",
     uploadButton: "Upload",
     uploadHint: "Exactly one .fds file, further case files optional.",
+    uploadFolderLabel: "Target folder",
+    uploadFolderPlaceholder: "derived from the file name",
+    uploadParentLabel: "Create in",
+    uploadParentDefault: "upload directory",
+    uploadParentBrowsed: "the browsed directory",
+    uploadTargetHint: "Working directory: {path}",
+    uploadTargetAuto: "<automatic>",
     uploadRunning: "Uploading… {percent} %",
     uploadDone: "Uploaded to {dir}",
     uploadFailed: "Upload failed: {error}",
@@ -404,5 +418,8 @@ function applyStaticTranslations() {
   });
   document.querySelectorAll("[data-i18n-title]").forEach((el) => {
     el.title = t(el.dataset.i18nTitle);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
   });
 }

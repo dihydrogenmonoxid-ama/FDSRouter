@@ -133,6 +133,19 @@
           <input id="upload-input" type="file" multiple accept=".fds,.csv,.txt,.dat,.inc" />
           <button id="upload-btn" class="secondary small" data-i18n="uploadButton" disabled>Hochladen</button>
         </div>
+        <div class="field">
+          <label for="upload-folder-name" data-i18n="uploadFolderLabel">Zielordner</label>
+          <input id="upload-folder-name" type="text" data-i18n-placeholder="uploadFolderPlaceholder"
+                 placeholder="automatisch aus Dateiname" />
+        </div>
+        <div class="field">
+          <label for="upload-parent-select" data-i18n="uploadParentLabel">Anlegen in</label>
+          <select id="upload-parent-select">
+            <option value="default" data-i18n="uploadParentDefault">Upload-Verzeichnis</option>
+            <option value="browsed" data-i18n="uploadParentBrowsed">geöffnetem Verzeichnis</option>
+          </select>
+        </div>
+        <div id="upload-target-path" class="hint"></div>
         <div id="upload-status" class="hint" data-i18n="uploadHint">Genau eine .fds-Datei, weitere Falldateien optional.</div>
 
         <div class="sub-head" data-i18n="browseSectionTitle">Auf dem Server auswählen</div>

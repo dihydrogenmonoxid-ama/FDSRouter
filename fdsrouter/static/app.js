@@ -33,6 +33,10 @@ const state = {
 const modalState = {
   selectedFilePath: null,
   meshInfo: null,
+  // Where an upload creates its working directory: the configured upload_dir, or the directory
+  // currently open in the server browser.
+  uploadRootDir: null,
+  browsePath: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -144,7 +148,9 @@ function openNewJobModal() {
   el("upload-input").value = "";
   el("upload-btn").disabled = true;
   el("upload-status").textContent = t("uploadHint");
+  el("upload-folder-name").value = "";
   el("new-job-overlay").hidden = false;
+  loadUploadRoot();
   browse(getLastBrowsePath());
 }
 
@@ -162,6 +168,8 @@ async function browse(path) {
     data = await apiGet("/api/browse");
   }
   setLastBrowsePath(data.path);
+  modalState.browsePath = data.path;
+  updateUploadTargetHint();
 
   el("browser-path").textContent = data.path;
   const list = el("browser-list");
@@ -222,6 +230,34 @@ async function selectFile(path, liEl = null) {
   }
 }
 
+/** The configured upload_dir, shown as the default location for the new working directory. */
+async function loadUploadRoot() {
+  try {
+    modalState.uploadRootDir = (await apiGet("/api/upload/target")).upload_dir;
+  } catch (e) {
+    modalState.uploadRootDir = null;
+  }
+  updateUploadTargetHint();
+}
+
+function uploadParentDir() {
+  return el("upload-parent-select").value === "browsed" ? modalState.browsePath : modalState.uploadRootDir;
+}
+
+/** Spell out the directory the upload will create, so it is clear before anything is sent. */
+function updateUploadTargetHint() {
+  const parent = uploadParentDir();
+  const hint = el("upload-target-path");
+  if (!parent) {
+    hint.textContent = "";
+    return;
+  }
+  const folder = el("upload-folder-name").value.trim();
+  hint.textContent = t("uploadTargetHint", {
+    path: folder ? `${parent}/${folder}` : `${parent}/${t("uploadTargetAuto")}`,
+  });
+}
+
 /** POST the case with XHR rather than fetch: only XHR reports upload progress, and a case
  *  copied to a compute server over the office network is big enough to need it. */
 function uploadCase(formData, onProgress) {
@@ -253,6 +289,12 @@ async function startUpload() {
 
   const form = new FormData();
   for (const file of files) form.append("files", file);
+  const folderName = el("upload-folder-name").value.trim();
+  if (folderName) form.append("folder_name", folderName);
+  // Only sent for the browsed directory -- an empty value keeps the backend's own default.
+  if (el("upload-parent-select").value === "browsed" && modalState.browsePath) {
+    form.append("parent_dir", modalState.browsePath);
+  }
 
   const status = el("upload-status");
   const button = el("upload-btn");
@@ -1507,7 +1549,16 @@ el("new-job-btn").addEventListener("click", openNewJobModal);
 el("new-job-cancel").addEventListener("click", closeNewJobModal);
 el("new-job-submit").addEventListener("click", submitNewJob);
 el("upload-btn").addEventListener("click", startUpload);
+el("upload-folder-name").addEventListener("input", updateUploadTargetHint);
+el("upload-parent-select").addEventListener("change", updateUploadTargetHint);
 el("upload-input").addEventListener("change", (ev) => {
+  const files = Array.from(ev.target.files || []);
+  // Suggest the case's own name for the working directory; the operator can still rename it.
+  const fdsFile = files.find((file) => file.name.toLowerCase().endsWith(".fds"));
+  if (fdsFile && !el("upload-folder-name").value.trim()) {
+    el("upload-folder-name").value = fdsFile.name.replace(/\.fds$/i, "");
+  }
+  updateUploadTargetHint();
   el("upload-btn").disabled = (ev.target.files || []).length === 0;
 });
 el("new-job-overlay").addEventListener("click", (ev) => {

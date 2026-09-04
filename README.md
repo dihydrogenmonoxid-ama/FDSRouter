@@ -25,8 +25,9 @@ verwalten wollen.
 
 - **Im Netzwerk betreibbar** — der Dienst läuft auf dem Rechner, der rechnet; bedient wird er
   aus dem Browser eines beliebigen Arbeitsplatzes im selben Netz (`host: "0.0.0.0"` setzen).
-  Fälle lassen sich vom Arbeitsplatz **hochladen** und das Ergebnisverzeichnis als ZIP wieder
-  **herunterladen** — kein Terminal-Zugang zum Rechenknoten nötig
+  Fälle lassen sich vom Arbeitsplatz **hochladen** — samt neu angelegtem, selbst benanntem
+  Arbeitsverzeichnis auf dem Rechenknoten — und das Ergebnisverzeichnis als ZIP wieder
+  **herunterladen**; kein Terminal-Zugang zum Rechenknoten nötig
 - **Warteschlange verwalten** — `.fds`-Dateien über einen serverseitigen Datei-Browser einreihen,
   Reihenfolge per Drag & Drop ändern, auch während bereits ein Lauf aktiv ist (nur der laufende
   Job ist fixiert, alle wartenden Jobs bleiben jederzeit umsortierbar)
@@ -229,8 +230,21 @@ wirksam.
 
 Danach ist die Oberfläche unter `http://<server-ip>:8000/` erreichbar. Fälle lädt man über
 „Neuer Job → Vom Rechner hochladen" hoch (genau eine `.fds`-Datei, weitere Falldateien wie
-Rampen oder Include-Dateien optional); FDS rechnet im angelegten Upload-Verzeichnis, und über
-„Ergebnisse" an der Job-Karte kommt das Ergebnisverzeichnis als ZIP zurück.
+Rampen oder Include-Dateien optional).
+
+Der Upload legt dabei auf dem Rechenknoten ein neues Verzeichnis an — das ist das
+Arbeitsverzeichnis, in dem FDS rechnet und seine `.out`- und `.csv`-Dateien ablegt, und genau
+das kommt später über „Ergebnisse" an der Job-Karte als ZIP zurück. Zwei Felder steuern es:
+
+- **Zielordner** — der Name des neuen Verzeichnisses. Vorbelegt mit dem Namen der `.fds`-Datei,
+  frei überschreibbar; leer bedeutet einen automatischen Namen aus Zeitstempel und Fallname.
+  Ein bereits vorhandener Ordner wird abgelehnt, damit nicht zwei Fälle im selben
+  Ergebnisverzeichnis landen.
+- **Anlegen in** — entweder das in `config.yaml` konfigurierte `upload_dir` oder das
+  Verzeichnis, das im Dateibrowser darunter gerade geöffnet ist. So lässt sich der Fall direkt
+  in eine bestehende Projektstruktur auf dem Server legen.
+
+Die Zeile darunter zeigt vorab den vollständigen Pfad, der angelegt wird.
 
 **FDSRouter hat noch keine Benutzerverwaltung.** Wer die Oberfläche erreicht, darf Jobs
 einreihen und beenden — und über den Einstellungsdialog den Dienst neu starten, aktualisieren

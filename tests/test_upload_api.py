@@ -85,3 +85,80 @@ def test_oversized_upload_is_rejected_and_leaves_nothing_behind(client):
 
     assert response.status_code == 413
     assert list(client.upload_root.iterdir()) == []
+
+
+def test_upload_creates_the_named_working_directory(client):
+    response = client.post(
+        "/api/upload",
+        files=[("files", ("atrium.fds", FDS_SOURCE, "application/octet-stream"))],
+        data={"folder_name": "Atrium_v3"},
+    )
+
+    assert response.status_code == 200
+    case_dir = Path(response.json()["case_dir"])
+    assert case_dir.name == "Atrium_v3"
+    assert case_dir.parent == client.upload_root
+    assert (case_dir / "atrium.fds").is_file()
+
+
+def test_named_folder_cannot_escape_the_target_directory(client):
+    response = client.post(
+        "/api/upload",
+        files=[("files", ("atrium.fds", FDS_SOURCE, "application/octet-stream"))],
+        data={"folder_name": "../../escaped"},
+    )
+
+    assert response.status_code == 200
+    case_dir = Path(response.json()["case_dir"])
+    assert case_dir.parent == client.upload_root
+    assert ".." not in case_dir.name
+
+
+def test_an_existing_folder_is_refused_instead_of_mixing_two_cases(client):
+    payload = {"folder_name": "Atrium_v3"}
+    first = client.post(
+        "/api/upload", files=[("files", ("atrium.fds", FDS_SOURCE, "application/octet-stream"))], data=payload
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/upload", files=[("files", ("atrium.fds", FDS_SOURCE, "application/octet-stream"))], data=payload
+    )
+
+    assert second.status_code == 409
+    assert "existiert bereits" in second.json()["detail"]
+    # The first case must still be intact.
+    assert (Path(first.json()["case_dir"]) / "atrium.fds").is_file()
+
+
+def test_upload_can_create_the_folder_in_a_browsed_directory(client, tmp_path):
+    project_dir = tmp_path / "projekte" / "Kunde"
+    project_dir.mkdir(parents=True)
+
+    response = client.post(
+        "/api/upload",
+        files=[("files", ("atrium.fds", FDS_SOURCE, "application/octet-stream"))],
+        data={"folder_name": "Lauf1", "parent_dir": str(project_dir)},
+    )
+
+    assert response.status_code == 200
+    case_dir = Path(response.json()["case_dir"])
+    assert case_dir == project_dir / "Lauf1"
+    assert (case_dir / "atrium.fds").is_file()
+
+
+def test_unknown_parent_directory_is_rejected(client, tmp_path):
+    response = client.post(
+        "/api/upload",
+        files=[("files", ("atrium.fds", FDS_SOURCE, "application/octet-stream"))],
+        data={"folder_name": "Lauf1", "parent_dir": str(tmp_path / "gibt-es-nicht")},
+    )
+
+    assert response.status_code == 400
+    assert "nicht gefunden" in response.json()["detail"]
+
+
+def test_upload_target_reports_the_configured_directory(client):
+    payload = client.get("/api/upload/target").json()
+
+    assert Path(payload["upload_dir"]) == client.upload_root
