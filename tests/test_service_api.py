@@ -92,3 +92,40 @@ def test_update_refuses_outside_a_git_checkout(monkeypatch, tmp_path):
 
     with pytest.raises(service_control.ServiceControlError, match="no_git_checkout"):
         service_control.update()
+
+
+class _Result:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_restarting_our_own_unit_survives_being_killed_by_it(monkeypatch):
+    """systemd tears down the control group the systemctl client itself runs in, so the call
+    comes back as 'killed by SIGTERM' (-15) even though the restart was accepted."""
+    monkeypatch.setattr(service_control.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(service_control, "_scope", lambda: "user")
+    monkeypatch.setattr(service_control.subprocess, "run", lambda *a, **k: _Result(-15))
+
+    service_control.restart()  # must not raise
+
+
+def test_a_real_systemctl_failure_is_still_an_error(monkeypatch):
+    monkeypatch.setattr(service_control.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(service_control, "_scope", lambda: "user")
+    monkeypatch.setattr(
+        service_control.subprocess,
+        "run",
+        lambda *a, **k: _Result(1, stderr="Unit fdsrouter.service not found."),
+    )
+
+    with pytest.raises(service_control.ServiceControlError, match="not found"):
+        service_control.restart()
+
+
+def test_a_signal_death_outside_the_restart_path_is_not_tolerated(monkeypatch):
+    monkeypatch.setattr(service_control.subprocess, "run", lambda *a, **k: _Result(-9))
+
+    with pytest.raises(service_control.ServiceControlError):
+        service_control._run(["git", "pull"], timeout=5)

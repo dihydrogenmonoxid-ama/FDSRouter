@@ -13,6 +13,7 @@ buttons that cannot work.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -28,6 +29,8 @@ REPO_DIR = Path(__file__).resolve().parent.parent.parent
 
 USER_UNIT = Path.home() / ".config" / "systemd" / "user" / UNIT_NAME
 SYSTEM_UNIT = Path("/etc/systemd/system") / UNIT_NAME
+
+logger = logging.getLogger(__name__)
 
 SYSTEMCTL_TIMEOUT_S = 30
 UPDATE_TIMEOUT_S = 600
@@ -122,7 +125,7 @@ def status() -> dict:
     }
 
 
-def _run(command: list[str], *, timeout: int) -> str:
+def _run(command: list[str], *, timeout: int, tolerate_signal: bool = False) -> str:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -131,9 +134,19 @@ def _run(command: list[str], *, timeout: int) -> str:
         raise ServiceControlError(f"{' '.join(command)}: {exc}") from exc
 
     output = (result.stdout + result.stderr).strip()
-    if result.returncode != 0:
-        raise ServiceControlError(output or f"{' '.join(command)}: Exit-Code {result.returncode}")
-    return output
+    if result.returncode == 0:
+        return output
+
+    # A negative return code means the process was killed by a signal. When the command asked
+    # systemd to restart or stop *this* unit, that is the expected ending rather than a failure:
+    # systemd tears down the unit's control group, and the systemctl client that requested it
+    # lives in that very group, so it is killed (SIGTERM, code -15) before it can exit on its
+    # own. The restart itself was already queued at that point.
+    if tolerate_signal and result.returncode < 0:
+        logger.info("%s was terminated by signal %s while restarting our own unit", command[0], -result.returncode)
+        return output
+
+    raise ServiceControlError(output or f"{' '.join(command)}: Exit-Code {result.returncode}")
 
 
 def _systemctl_verb(verb: str) -> None:
@@ -141,9 +154,10 @@ def _systemctl_verb(verb: str) -> None:
     reason = _unavailable_reason(scope)
     if reason is not None or scope is None:
         raise ServiceControlError(reason or "no_unit")
-    # --no-block: systemd takes the job and this process may be torn down before it finishes,
-    # which is exactly what a restart of our own unit means.
-    _run([*_systemctl(scope), verb, "--no-block", UNIT_NAME], timeout=SYSTEMCTL_TIMEOUT_S)
+    # --no-block: systemd only needs to accept the job; waiting for it to finish is pointless
+    # when finishing it means killing us. tolerate_signal covers the race in the other
+    # direction, where the teardown reaches the systemctl client before it manages to exit.
+    _run([*_systemctl(scope), verb, "--no-block", UNIT_NAME], timeout=SYSTEMCTL_TIMEOUT_S, tolerate_signal=True)
 
 
 def restart() -> None:

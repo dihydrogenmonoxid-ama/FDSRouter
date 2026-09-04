@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_S = 10.0
 REQUEST_TIMEOUT_S = 10.0
 UPDATE_TIMEOUT_S = 600.0
+RESTART_WAIT_S = 90.0
+RESTART_POLL_S = 2.0
+
+# Sentinel: the request never got an answer. For a restart or a stop that is the expected
+# ending -- the service goes down while answering -- so the caller decides what it means.
+TRANSPORT_ERROR = "__transport__"
 
 ACCENT = (255, 106, 61, 255)
 ACCENT_INNER = (255, 209, 128, 255)
@@ -136,8 +143,8 @@ class TrayApp:
         """(ok, message) -- a 409 means a job is running and the action was refused."""
         try:
             response = httpx.post(f"{self.base_url}{path}", json={"force": False}, timeout=timeout)
-        except httpx.HTTPError as exc:
-            return False, f"Service not reachable ({exc.__class__.__name__})"
+        except httpx.HTTPError:
+            return False, TRANSPORT_ERROR
         if response.status_code == 409:
             return False, "A job is running - confirm in the web interface"
         if response.status_code >= 400:
@@ -191,16 +198,42 @@ class TrayApp:
 
     def restart_service(self) -> None:
         ok, message = self._post("/api/service/restart")
-        self._notify("Service is restarting" if ok else message)
+        if ok or message == TRANSPORT_ERROR:
+            self._notify("Service is restarting")
+            self._wait_for_service_back()
+        else:
+            self._notify(message)
 
     def stop_service(self) -> None:
         ok, message = self._post("/api/service/stop")
-        self._notify("Service stopped" if ok else message)
+        # No answer here means the service went down before it could send one, which is what
+        # was asked for.
+        self._notify("Service stopped" if ok or message == TRANSPORT_ERROR else message)
+        self.refresh()
 
     def update_service(self) -> None:
         self._notify("Update running...")
         ok, message = self._post("/api/service/update", timeout=UPDATE_TIMEOUT_S)
-        self._notify("Updated, service is restarting" if ok else message)
+        if ok or message == TRANSPORT_ERROR:
+            self._notify("Updated, service is restarting")
+            self._wait_for_service_back()
+        else:
+            self._notify(message)
+
+    def _wait_for_service_back(self) -> None:
+        """Wait for the replacement process, in a thread so the menu stays responsive."""
+
+        def wait() -> None:
+            deadline = time.monotonic() + RESTART_WAIT_S
+            while time.monotonic() < deadline:
+                time.sleep(RESTART_POLL_S)
+                if self._get("/api/service") is not None:
+                    self._notify("Service is back up")
+                    self.refresh()
+                    return
+            self._notify("Service did not come back - check systemctl --user status fdsrouter")
+
+        threading.Thread(target=wait, daemon=True).start()
 
     def quit(self) -> None:
         self._stop.set()

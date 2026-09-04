@@ -478,16 +478,29 @@ async function serviceAction(kind) {
     // force is only sent once the user has been warned about the running job by name; without
     // it the backend refuses, which catches a stale tab that does not know about the run yet.
     const result = await apiSend(`/api/service/${kind}`, "POST", { force: Boolean(running) });
+
+    if (kind === "stop") {
+      resultEl.textContent = t("serviceStopped");
+      return;
+    }
     if (kind === "update") {
       resultEl.textContent = result.changed
         ? t("serviceUpdated", { before: result.revision_before || "?", after: result.revision_after || "?" })
         : t("serviceUpdateNoChange", { revision: result.revision_after || "?" });
-      if (!result.restarted) setServiceButtonsDisabled(false);
+      if (!result.restarted) {
+        setServiceButtonsDisabled(false);
+        return;
+      }
     }
+    await waitForServiceBack(resultEl);
   } catch (e) {
-    // Restarting and stopping tear down the server, so a dropped request is the expected
-    // outcome rather than a failure -- only a real error response says something went wrong.
-    if (e instanceof TypeError && kind !== "update") return;
+    // Restarting and stopping tear the server down, so a dropped request is the expected
+    // ending rather than a failure -- only a real error response says something went wrong.
+    if (e instanceof TypeError) {
+      if (kind === "stop") resultEl.textContent = t("serviceStopped");
+      else await waitForServiceBack(resultEl);
+      return;
+    }
     // The backend answers an impossible action with the same reason key the status uses.
     const reasonKey = SERVICE_REASON_KEYS[e.message];
     resultEl.textContent = e.message === "running_job"
@@ -498,6 +511,35 @@ async function serviceAction(kind) {
     setServiceButtonsDisabled(false);
     if (e.message === "running_job") loadServiceStatus();
   }
+}
+
+const SERVICE_WAIT_TIMEOUT_MS = 90000;
+const SERVICE_WAIT_INTERVAL_MS = 2000;
+
+/** Poll until the restarted service answers again, and say so.
+ *
+ *  Restarting means the answer to "did it work?" cannot come from the request itself -- the
+ *  process handling it is the one being replaced. So the dialog waits for the new one instead
+ *  of leaving "restarting..." standing forever.
+ */
+async function waitForServiceBack(resultEl) {
+  resultEl.textContent = t("serviceRestarting");
+  const deadline = Date.now() + SERVICE_WAIT_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SERVICE_WAIT_INTERVAL_MS));
+    try {
+      const status = await apiGet("/api/service");
+      await loadServiceStatus();
+      resultEl.textContent = t("serviceBackUp", { revision: status.revision || t("unknownValue") });
+      return;
+    } catch (e) {
+      // Still down -- which is exactly what we are waiting through.
+    }
+  }
+
+  resultEl.textContent = t("serviceStillDown");
+  setServiceButtonsDisabled(false);
 }
 
 async function testEnergyConnection() {
