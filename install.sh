@@ -330,20 +330,51 @@ esac
 # 6. Summary
 # --------------------------------------------------------------------------------------
 
-PORT="$("$VENV_PY" - <<'PY'
-import yaml, pathlib
-raw = yaml.safe_load(pathlib.Path("config.yaml").read_text(encoding="utf-8")) or {}
-print(raw.get("port", 8000))
+read_config() {  # read_config key default -- read one value out of config.yaml
+    "$VENV_PY" - "$REPO_DIR/config.yaml" "$1" "$2" <<'PY'
+import pathlib
+import sys
+
+import yaml
+
+raw = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+value = raw.get(sys.argv[2])
+print(sys.argv[3] if value is None else value)
 PY
-)"
+}
+
+PORT="$(read_config port 8000)"
+HOST="$(read_config host 127.0.0.1)"
+lan_ip() {  # best effort -- hostname -I is Linux-only, the rest covers macOS
+    hostname -I 2>/dev/null | awk '{print $1; exit}' && return 0
+    ipconfig getifaddr en0 2>/dev/null && return 0
+    return 0
+}
+LAN_IP="$(lan_ip || true)"
+[ -n "$LAN_IP" ] || LAN_IP="<server-ip>"
 
 info "Fertig"
 if [ "$SERVICE_MODE" = "user" ] || [ "$SERVICE_MODE" = "system" ]; then
-    note "Oberfläche: http://localhost:$PORT/"
     note "Der Dienst läuft bereits und startet künftig automatisch mit."
 else
     note "Starten mit:  $VENV_DIR/bin/fdsrouter start"
     note "Oder:         source $VENV_DIR/bin/activate && fdsrouter start"
     note "Autostart später nachrüsten:  ./install.sh --service"
+fi
+
+if [ "$HOST" = "127.0.0.1" ] || [ "$HOST" = "localhost" ]; then
+    note "Oberfläche: http://localhost:$PORT/ -- nur von diesem Rechner aus erreichbar."
+    note "Für die Bedienung von einem anderen Rechner im Netz:"
+    note "    ./install.sh --host=0.0.0.0 --no-service --yes"
+    if [ "$SERVICE_MODE" = "user" ]; then
+        note "    systemctl --user restart fdsrouter"
+    elif [ "$SERVICE_MODE" = "system" ]; then
+        note "    sudo systemctl restart fdsrouter"
+    fi
+else
+    note "Oberfläche: http://$LAN_IP:$PORT/ (im Netz erreichbar, host: $HOST)"
+    if have ufw && sudo -n ufw status 2>/dev/null | grep -q '^Status: active'; then
+        warn "Die Firewall ufw ist aktiv -- Port freigeben mit: sudo ufw allow $PORT/tcp"
+    fi
 fi
 printf '\n'

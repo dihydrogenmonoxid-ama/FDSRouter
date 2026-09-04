@@ -218,6 +218,30 @@ Rampen oder Include-Dateien optional); FDS rechnet im angelegten Upload-Verzeich
 einreihen und beenden — der Dienst gehört daher ausschließlich in ein vertrauenswürdiges Netz,
 nicht ans offene Internet.
 
+### Oberfläche ist vom Arbeitsplatz nicht erreichbar
+
+Der Reihe nach auf dem Rechner prüfen, auf dem FDSRouter läuft:
+
+```bash
+grep '^host' config.yaml              # 127.0.0.1 = nimmt nur lokale Verbindungen an
+ss -tlnp | grep :8000                 # erwartet: 0.0.0.0:8000, nicht 127.0.0.1:8000
+sudo ufw status                       # falls aktiv: sudo ufw allow 8000/tcp
+ip -4 addr show scope global          # IP und Subnetz -- muss zum Arbeitsplatz passen
+```
+
+Steht `host` auf `127.0.0.1`, hilft keine IP-Adresse weiter — dann umstellen und den Dienst neu
+starten:
+
+```bash
+./install.sh --host=0.0.0.0 --no-service --yes
+systemctl --user restart fdsrouter
+```
+
+Antwortet der Rechner vom Arbeitsplatz aus schon nicht auf `ping`, liegt es nicht an FDSRouter,
+sondern am Netz (getrennte Subnetze, VLAN oder WLAN-Client-Isolation). Dass ein LAN-Scan den
+Rechner nicht auflistet, sagt für sich genommen wenig aus: ohne `avahi-daemon` meldet sich ein
+Linux-Rechner nicht per mDNS, und viele Scans werten nur Ping-Antworten aus.
+
 ## Tests
 
 ```bash

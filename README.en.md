@@ -217,6 +217,29 @@ on a job card returns the result directory as a ZIP.
 **FDSRouter has no user management yet.** Anyone who can reach the interface can enqueue and
 stop jobs, so the service belongs on a trusted network only, never on the open internet.
 
+### The interface is not reachable from another machine
+
+Check these in order on the machine FDSRouter runs on:
+
+```bash
+grep '^host' config.yaml              # 127.0.0.1 = accepts local connections only
+ss -tlnp | grep :8000                 # expected: 0.0.0.0:8000, not 127.0.0.1:8000
+sudo ufw status                       # if active: sudo ufw allow 8000/tcp
+ip -4 addr show scope global          # address and subnet -- must match the workstation
+```
+
+If `host` is `127.0.0.1`, no IP address will help — change it and restart the service:
+
+```bash
+./install.sh --host=0.0.0.0 --no-service --yes
+systemctl --user restart fdsrouter
+```
+
+If the machine does not even answer `ping` from the workstation, the cause is the network
+(separate subnets, VLAN or wireless client isolation), not FDSRouter. A LAN scan that does not
+list the machine means little on its own: without `avahi-daemon` a Linux box does not announce
+itself over mDNS, and many scanners only evaluate ping replies.
+
 ## Tests
 
 ```bash
