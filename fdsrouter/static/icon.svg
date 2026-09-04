@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FDSRouter">
+  <title>FDSRouter</title>
+  <!-- Same outline the tray icon draws (fdsrouter/tray.py): one shape for both places. -->
+  <path fill="#ff6a3d"
+        d="M36 4 C47 17 52 27 48 38 C46 52 39 61 31 61 C22 61 14 53 14 41 C14 31 20 26 23 17 C26 26 31 28 31 21 C31 14 33 9 36 4 Z" />
+  <path fill="#ffd180"
+        d="M35 29 C40 36 42 42 39 48 C37 55 34 58 31 58 C28 58 25 54 25 47 C25 41 32 38 35 29 Z" />
+</svg>

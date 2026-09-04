@@ -38,7 +38,10 @@ verwalten wollen.
   kalibriert sich mit jedem abgeschlossenen Lauf auf demselben Rechner
 - **Live-Monitoring** — CPU (gesamt und je Kern), RAM, Temperatur und Lüfterdrehzahl (best
   effort), Status je MPI-Prozess sowie live aus `.out`, `_hrr.csv` und `_devc.csv` gelesene
-  Simulationszeit, Zeitschrittgröße, Wärmefreisetzungsrate und Messstellenwerte
+  Simulationszeit, Zeitschrittgröße, Wärmefreisetzungsrate und Messstellenwerte. Das
+  Live-Diagramm (HRR oder eine DEVC-Messstelle) zeichnet [uPlot](https://github.com/leeoniya/uPlot)
+  samt Cursor-Ablesung; die Messstellenliste ist ein aufklappbarer Abschnitt, aus dem sich
+  jede Messstelle per Klick ins Diagramm holen lässt
 - **Konsolen-Log** — die vollständige Ausgabe von `mpirun`/`fds` je Job, live mitlaufend und
   nach dem Lauf weiterhin abrufbar
 - **Externe Läufe erkennen** — FDS-Prozesse, die außerhalb von FDSRouter gestartet wurden,
@@ -51,7 +54,10 @@ verwalten wollen.
   direkt im Einstellungsdialog, mit Rückfrage solange eine Simulation läuft
 - **Persistenz** — Warteschlange, Job-Historie und Metrik-Verlauf liegen in SQLite und überstehen
   einen Neustart
-- **Zweisprachige Oberfläche** (Deutsch/Englisch), helles und dunkles Farbschema
+- **Tray-Icon** (Linux-Desktop) — kleines Flammensymbol in der Menüleiste mit Status, Öffnen,
+  Neustart, Update und Beenden; startet mit der Sitzung
+- **Zweisprachige Oberfläche** — Englisch als Voreinstellung, Deutsch über die Einstellungen
+  umschaltbar (die Wahl wird im Browser gemerkt); helles und dunkles Farbschema
 - **Mehrknotenfähiges Datenmodell** — v1 nutzt nur den lokalen Rechner, das Node-Registrierungs-
   und Heartbeat-Schema ist aber bereits vorhanden, um später weitere Compute-Nodes anzubinden
 
@@ -88,6 +94,7 @@ cd FDSRouter
 | `--service` / `--no-service` | Autostart-Dienst ohne Rückfrage einrichten bzw. überspringen |
 | `--service=system` | systemweiten Dienst statt eines Benutzerdienstes anlegen |
 | `--host=0.0.0.0`, `--port=8080` | Adresse und Port direkt setzen (siehe „Betrieb im Netzwerk") |
+| `--tray` / `--no-tray` | Tray-Icon im Desktop einrichten bzw. überspringen |
 | `--dev` | zusätzlich `pytest` installieren |
 | `--yes` | ohne Rückfragen durchlaufen (unbeaufsichtigte Installation) |
 
@@ -192,6 +199,28 @@ git pull
 systemctl --user restart fdsrouter       # bzw. sudo systemctl restart fdsrouter
 ```
 
+## Tray-Icon (Linux-Desktop)
+
+```bash
+./install.sh --tray
+```
+
+Legt ein kleines Flammensymbol in der Menüleiste an, das mit der Sitzung startet
+(`~/.config/autostart/fdsrouter-tray.desktop`). Das Menü zeigt den Status („läuft: Atrium_v3"
+bzw. „nicht erreichbar") und bietet Oberfläche öffnen, Neu starten, Aktualisieren und Beenden —
+dieselben Aktionen wie im Einstellungsdialog, über dieselbe API.
+
+Läuft gerade eine Simulation, verweigert die API Neustart und Beenden; das Tray meldet das und
+verweist auf die Oberfläche, wo bestätigt werden kann. Ein Menüeintrag kann also keinen
+laufenden Job beenden.
+
+Das Icon läuft bewusst **nicht** im Dienst, sondern in der Desktop-Sitzung: der Dienst startet
+per systemd schon beim Hochfahren, lange bevor sich jemand anmeldet, und hat gar keine Anzeige.
+Es bekommt daher eine eigene, kleine Umgebung (`.venv-tray`, mit `--system-site-packages`), weil
+die Linux-Anbindung von `pystray` das Distributionspaket `python3-gi` braucht — die Umgebung des
+Dienstes bleibt unangetastet. Unter GNOME ist zusätzlich die Erweiterung „AppIndicator and
+KStatusNotifierItem Support" nötig, die Ubuntu standardmäßig mitbringt.
+
 ## Konfiguration
 
 Beim allerersten Start wird `config.yaml` im aktuellen Verzeichnis automatisch angelegt
@@ -275,6 +304,22 @@ sondern am Netz (getrennte Subnetze, VLAN oder WLAN-Client-Isolation). Dass ein 
 Rechner nicht auflistet, sagt für sich genommen wenig aus: ohne `avahi-daemon` meldet sich ein
 Linux-Rechner nicht per mDNS, und viele Scans werten nur Ping-Antworten aus.
 
+### Lüfterdrehzahl bleibt leer
+
+FDSRouter liest Lüfter über `psutil.sensors_fans()` und, wenn das nichts liefert, direkt aus
+`/sys/class/hwmon/*/fan*_input`. Bleibt das Feld trotzdem leer, existieren auf dem Rechner keine
+Lüftersensoren — meist, weil das Kernelmodul des Sensor-Chips nicht geladen ist:
+
+```bash
+sudo apt install lm-sensors
+sudo sensors-detect          # Fragen mit ENTER bestätigen, Module eintragen lassen
+sensors                      # zeigt an, was danach lesbar ist
+```
+
+Findet `sensors` keine Lüfter, stellt die Hardware bzw. das Board sie nicht bereit (bei vielen
+Servern und in virtuellen Maschinen normal). Die Kernfunktionen hängen nicht daran; der Grund
+steht als Tooltip an der Anzeige.
+
 ## Tests
 
 ```bash
@@ -303,6 +348,12 @@ Build- oder Deploy-Pipeline. Die Kernlogik liegt in `fdsrouter/core`:
 | `external_jobs.py`  | erkennt rein lesend FDS-Läufe außerhalb von FDSRouter                        |
 | `energy.py`         | liest einen Home-Assistant-Leistungssensor und rechnet Energie/Kosten ab     |
 | `service_control.py`| steuert den systemd-Dienst (Neustart, Update, Stopp) fuer den Einstellungsdialog |
+
+Das Frontend bleibt ohne Build-Schritt: die einzige Fremdbibliothek ist
+[uPlot](https://github.com/leeoniya/uPlot) für das Live-Diagramm, mitgeliefert unter
+`fdsrouter/static/vendor/` — kein CDN zur Laufzeit, passend zur Vorgabe „lokal, kein
+Cloud-Zwang". Das Tray-Icon liegt in `fdsrouter/tray.py` und spricht ausschließlich die HTTP-API
+an, läuft also unabhängig vom Dienst.
 
 Persistenz über SQLite (`fdsrouter/db`), kein separater Datenbankserver. Das Datenmodell kennt
 `node`, `job`, `run_metric_sample`, `out_file_metric` und `settings`.

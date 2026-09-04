@@ -68,6 +68,24 @@ function prepareCanvas(canvas, cssWidth, cssHeight) {
   return ctx;
 }
 
+/** Same, but for a canvas the stylesheet already sizes (width: 100%).
+ *
+ *  Only the pixel buffer is touched here. Writing the measured size back into style.width is
+ *  what made the plots shrink on every redraw: with `box-sizing: border-box` the measured
+ *  clientWidth excludes the 1px border on each side, so assigning it as the border-box width
+ *  took two more pixels off the content box every time a sample came in.
+ */
+function fitCanvas(canvas, fallbackWidth = 100, fallbackHeight = 22) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || fallbackWidth;
+  const height = canvas.clientHeight || fallbackHeight;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, width, height };
+}
+
 /** Read a design token so canvas drawings follow the active theme like the DOM does. */
 function token(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
@@ -901,7 +919,7 @@ function renderRunningCard(job) {
         </span>
         <span>${t("simTimeAxisLabel")}</span>
       </div>
-      <canvas id="hrr-canvas"></canvas>
+      <div id="hrr-plot" class="plot-area"></div>
     </div>
     <div class="job-actions">
       <button class="danger small" id="stop-btn">${t("stopJob")}</button>
@@ -1123,14 +1141,9 @@ function handleJobMetrics(msg) {
   }
 
   const devices = msg.devices || {};
-  const devcTbody = el("devc-tbody");
   const deviceNames = Object.keys(devices);
   if (deviceNames.length !== state.knownDevices.length) refreshDeviceOptions(msg.job_id);
-  devcTbody.innerHTML = deviceNames.length
-    ? deviceNames
-        .map((name) => `<tr><td>${esc(name)}</td><td class="n">${devices[name].toFixed(1)}</td></tr>`)
-        .join("")
-    : `<tr><td colspan="2" class="empty">${t("noDevices")}</td></tr>`;
+  renderDeviceTable(devices);
 
   if (msg.out) {
     setText("run-simtime", msg.out.simulation_time_s != null ? msg.out.simulation_time_s.toFixed(2) : "–");
@@ -1161,6 +1174,51 @@ const MAX_PLOT_SAMPLES = 2000;
 
 /** Append a sample, replacing the last one when simulation time has not advanced -- FDS polls
  *  faster than it writes output, so otherwise the curve piles up points on the same x. */
+/** The collapsible DEVC panel: every measurement point with its live value, and a click to
+ *  put that device on the plot -- the same thing the signal select does, but from the list the
+ *  operator is already reading. */
+function renderDeviceTable(devices) {
+  const tbody = el("devc-tbody");
+  if (!tbody) return;
+  const names = Object.keys(devices);
+  setText("devc-count", String(names.length));
+
+  if (!names.length) {
+    tbody.innerHTML = `<tr><td colspan="2" class="empty">${t("noDevices")}</td></tr>`;
+    return;
+  }
+
+  const selected = state.plotSignal.kind === "devc" ? state.plotSignal.device : null;
+  tbody.innerHTML = names
+    .map((name) => {
+      const classes = `pick${name === selected ? " selected" : ""}`;
+      return (
+        `<tr class="${classes}" data-device="${esc(name)}">` +
+        `<td>${esc(name)}</td><td class="n">${devices[name].toFixed(1)}</td></tr>`
+      );
+    })
+    .join("");
+}
+
+const DEVC_PANEL_OPEN_KEY = "fdsrouter.devcPanelOpen";
+
+function restoreDevicePanelState() {
+  const panel = el("devc-panel");
+  if (!panel) return;
+  try {
+    panel.open = localStorage.getItem(DEVC_PANEL_OPEN_KEY) === "true";
+  } catch (e) {
+    panel.open = false;
+  }
+  panel.addEventListener("toggle", () => {
+    try {
+      localStorage.setItem(DEVC_PANEL_OPEN_KEY, String(panel.open));
+    } catch (e) {
+      // best effort only
+    }
+  });
+}
+
 function appendSample(series, time, value) {
   const last = series[series.length - 1];
   if (last && Math.abs(last.t - time) < 1e-9) {
@@ -1216,6 +1274,14 @@ function handleSystemMetrics(msg) {
   );
   setText("sys-temp", msg.cpu_temperature_c != null ? msg.cpu_temperature_c.toFixed(1) : t("notAvailable"));
   setText("sys-fan", msg.fan_rpm != null ? msg.fan_rpm.toFixed(0) : t("notAvailable"));
+  const fanEl = el("sys-fan");
+  if (fanEl) {
+    // Why the value is missing belongs on the readout itself -- "no sensors" is a very
+    // different situation from "this platform cannot read fans at all".
+    const reasonKey = { no_sensors: "fanNoSensors", unsupported_platform: "fanUnsupported" }[msg.fan_status];
+    fanEl.title = msg.fan_rpm != null || !reasonKey ? "" : t(reasonKey);
+    fanEl.classList.toggle("unavailable", msg.fan_rpm == null);
+  }
 
   if (msg.cpu_percent_total != null) {
     state.cpuTotalHistory.push(msg.cpu_percent_total);
@@ -1236,9 +1302,7 @@ function handleSystemMetrics(msg) {
 function drawSparkline(canvasId, values) {
   const canvas = el(canvasId);
   if (!canvas) return;
-  const w = canvas.clientWidth || 100;
-  const h = canvas.clientHeight || 22;
-  const ctx = prepareCanvas(canvas, w, h);
+  const { ctx, width: w, height: h } = fitCanvas(canvas);
   ctx.clearRect(0, 0, w, h);
   if (values.length < 2) return;
 
@@ -1320,124 +1384,107 @@ function drawCoreHeatmap() {
   });
 }
 
-/** Scale [lo, hi] to ticks at 1/2/5 x 10^n, the way a plotted axis is normally scaled.
- *  Works for ranges that do not start at zero -- a thermocouple sits at ambient, not at 0. */
-function niceAxisRange(lo, hi, count, exactBounds = false) {
-  if (!isFinite(lo) || !isFinite(hi)) return { ticks: [0, 1], min: 0, max: 1, step: 1 };
-  if (hi - lo < 1e-9) hi = lo + Math.max(Math.abs(lo) * 0.1, 1);
-  const rawStep = (hi - lo) / count;
-  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const normalized = rawStep / magnitude;
-  const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
-  // exactBounds keeps the given range and only puts the ticks on nice values -- used for the
-  // time axis, which has to end exactly at T_END so the plot matches the progress gauge.
-  const min = exactBounds ? lo : Math.floor(lo / step) * step;
-  const max = exactBounds ? hi : Math.ceil(hi / step) * step;
-  const ticks = [];
-  // Indexed rather than accumulated, so the ticks don't drift on non-integer steps.
-  // Tolerance only absorbs float noise (step * 1e-6); a half-step would admit a whole extra
-  // tick beyond the axis, which is what put a "1000" label on a 900 s axis.
-  const tolerance = step * 1e-6;
-  for (let i = Math.ceil(min / step - 1e-6); i * step <= max + tolerance; i++) {
-    ticks.push(i * step);
+// ---------- Live plot (uPlot) ----------
+//
+// Drawn with uPlot rather than by hand: it keeps a crisp HiDPI canvas, brings a cursor readout
+// ("what was the HRR at t = 180 s?") and stays fast with the thousands of samples a long run
+// produces. The library is vendored under static/vendor -- no CDN at runtime, no build step.
+
+const LIVE_PLOT_HEIGHT = 160;
+
+let livePlot = null; // uPlot instance
+let livePlotHost = null; // the container element it is mounted in
+let livePlotKey = null; // signal/theme/axis the instance was built for
+
+function livePlotData() {
+  const samples = plotSeries().slice();
+  // HRR starts at zero by definition, so the curve is anchored there; a device reading has no
+  // such baseline and is plotted only over the samples that actually exist.
+  if (state.plotSignal.kind === "hrr" && (samples.length === 0 || samples[0].t > 0.001)) {
+    samples.unshift({ t: 0, v: 0 });
   }
-  if (!ticks.length) ticks.push(min, max);
-  return { ticks, min, max, step };
+  return [samples.map((d) => d.t), samples.map((d) => d.v)];
 }
 
-/** Tick labels share the decimal count implied by the step, so an axis reads 0.9/1.0/1.1
- *  instead of rounding three distinct ticks to the same "1". */
-function formatTick(value, step) {
-  const abs = Math.abs(value);
-  if (abs >= 1e6) return value.toExponential(0).replace("e+", "e");
-  const decimals = step >= 1 ? 0 : Math.min(6, Math.ceil(-Math.log10(step)));
-  return value.toFixed(decimals);
+function destroyLivePlot() {
+  if (livePlot) livePlot.destroy();
+  livePlot = null;
+  livePlotHost = null;
+  livePlotKey = null;
+}
+
+function livePlotSeriesLabel() {
+  const unit = state.plotSignal.unit ? ` (${state.plotSignal.unit})` : "";
+  return state.plotSignal.kind === "hrr" ? `${t("liveHrr")}${unit}` : `${state.plotSignal.device}${unit}`;
+}
+
+function livePlotOptions(width, simEndTime) {
+  const line = token("--line", "#232a37");
+  const faint = token("--text-faint", "#7b8494");
+  const accent = token("--accent", "#ff6a3d");
+  const [r, g, b] = parseHexColor(accent, [255, 106, 61]);
+  const font = "10px " + token("--font-mono", "monospace");
+  const axis = {
+    stroke: faint,
+    font,
+    grid: { stroke: line, width: 1, dash: [1, 3] },
+    ticks: { stroke: line, width: 1, size: 3 },
+  };
+
+  return {
+    width,
+    height: LIVE_PLOT_HEIGHT,
+    padding: [10, 12, 0, 0],
+    // The cursor readout is the point of the legend here; series toggling would only let the
+    // single curve be switched off by accident.
+    legend: { show: true, live: true, isolate: true },
+    cursor: { drag: { x: false, y: false }, points: { size: 6 } },
+    scales: {
+      // Fixed time axis where the case declares T_END: the curve then grows across a stable
+      // axis instead of the axis rescaling under it on every sample.
+      x: { time: false, range: simEndTime ? [0, simEndTime] : undefined },
+      y: state.plotSignal.kind === "hrr" ? { range: (self, min, max) => [0, max > 0 ? max : 1] } : {},
+    },
+    axes: [{ ...axis, size: 26 }, { ...axis, size: 48 }],
+    series: [
+      { label: t("simTimeAxisLabel") },
+      {
+        label: livePlotSeriesLabel(),
+        stroke: accent,
+        width: 1.6,
+        fill: `rgba(${r}, ${g}, ${b}, 0.10)`,
+        points: { show: false },
+      },
+    ],
+  };
 }
 
 function drawLivePlot() {
-  const canvas = el("hrr-canvas");
-  if (!canvas) return;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight || 120;
-  const ctx = prepareCanvas(canvas, w, h);
-  ctx.clearRect(0, 0, w, h);
-
-  const data = plotSeries().slice();
-  // HRR starts at zero by definition, so the curve is anchored there; a device reading has no
-  // such baseline and is plotted only over the samples that actually exist.
-  if (state.plotSignal.kind === "hrr" && (data.length === 0 || data[0].t > 0.001)) {
-    data.unshift({ t: 0, v: 0 });
+  const host = el("hrr-plot");
+  if (!host) {
+    destroyLivePlot(); // the running job's card is gone
+    return;
   }
-  if (data.length === 0) return;
 
   const job = currentRunningJob();
-  // Fixed x-axis at T_END where the case declares one: the curve then grows across a stable
-  // axis instead of the axis rescaling under it on every sample.
-  const xAxis = niceAxisRange(0, (job && job.sim_end_time_s) || data[data.length - 1].t || 1, 5, true);
-  const values = data.map((d) => d.v);
-  const yAxis = niceAxisRange(
-    state.plotSignal.kind === "hrr" ? 0 : Math.min(...values),
-    Math.max(...values),
-    4
-  );
+  const simEndTime = (job && job.sim_end_time_s) || null;
+  // Everything that is baked into the options rather than into the data: rebuilding on a
+  // change is cheaper and simpler than patching a live instance.
+  const key = [state.plotSignal.kind, state.plotSignal.device, state.plotSignal.unit, getTheme(), simEndTime].join("|");
+  const width = Math.max(240, host.clientWidth || 0);
+  const data = livePlotData();
 
-  const padLeft = 42;
-  const padBottom = 15;
-  const padTop = 6;
-  const padRight = 6;
-  const plotW = w - padLeft - padRight;
-  const plotH = h - padTop - padBottom;
-  if (plotW <= 0 || plotH <= 0) return;
-
-  const span = (axis) => axis.max - axis.min || 1;
-  const clamp = (value, axis) => Math.min(Math.max(value, axis.min), axis.max);
-  const xOf = (value) => padLeft + ((clamp(value, xAxis) - xAxis.min) / span(xAxis)) * plotW;
-  const yOf = (value) => padTop + plotH - ((clamp(value, yAxis) - yAxis.min) / span(yAxis)) * plotH;
-
-  const line = token("--line", "#232a37");
-  const faint = token("--text-faint", "#7b8494");
-  ctx.font = "9px " + token("--font-mono", "monospace");
-  ctx.lineWidth = 1;
-
-  // Dotted gridlines + tick labels, solid frame on the two axes carrying the scale.
-  ctx.strokeStyle = line;
-  ctx.fillStyle = faint;
-  ctx.setLineDash([1, 3]);
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "right";
-  for (const value of yAxis.ticks) {
-    const y = Math.round(yOf(value)) + 0.5;
-    ctx.beginPath();
-    ctx.moveTo(padLeft, y);
-    ctx.lineTo(w - padRight, y);
-    ctx.stroke();
-    ctx.fillText(formatTick(value, yAxis.step), padLeft - 5, y);
+  if (!livePlot || livePlotHost !== host || livePlotKey !== key) {
+    destroyLivePlot();
+    host.innerHTML = "";
+    livePlot = new uPlot(livePlotOptions(width, simEndTime), data, host);
+    livePlotHost = host;
+    livePlotKey = key;
+    return;
   }
-  ctx.textBaseline = "alphabetic";
-  xAxis.ticks.forEach((value) => {
-    const x = Math.round(xOf(value)) + 0.5;
-    ctx.beginPath();
-    ctx.moveTo(x, padTop);
-    ctx.lineTo(x, padTop + plotH);
-    ctx.stroke();
-    // Align by position, not by index: only a label actually sitting at the canvas edge needs
-    // to be pulled inwards, and with an exact axis the last tick is usually not at the edge.
-    const EDGE_PX = 14;
-    ctx.textAlign = x - padLeft < EDGE_PX ? "left" : w - padRight - x < EDGE_PX ? "right" : "center";
-    ctx.fillText(formatTick(value, xAxis.step), x, h - 4);
-  });
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.moveTo(padLeft + 0.5, padTop);
-  ctx.lineTo(padLeft + 0.5, padTop + plotH + 0.5);
-  ctx.lineTo(w - padRight, padTop + plotH + 0.5);
-  ctx.stroke();
 
-  ctx.strokeStyle = token("--accent", "#ff6a3d");
-  ctx.lineWidth = 1.4;
-  ctx.beginPath();
-  data.forEach((d, i) => (i === 0 ? ctx.moveTo(xOf(d.t), yOf(d.v)) : ctx.lineTo(xOf(d.t), yOf(d.v))));
-  ctx.stroke();
+  if (livePlot.width !== width) livePlot.setSize({ width, height: LIVE_PLOT_HEIGHT });
+  livePlot.setData(data);
 }
 
 async function loadJobHistoryForChart(jobId) {
@@ -1549,6 +1596,16 @@ el("new-job-btn").addEventListener("click", openNewJobModal);
 el("new-job-cancel").addEventListener("click", closeNewJobModal);
 el("new-job-submit").addEventListener("click", submitNewJob);
 el("upload-btn").addEventListener("click", startUpload);
+el("devc-tbody").addEventListener("click", (ev) => {
+  const row = ev.target.closest("tr[data-device]");
+  if (!row) return;
+  const value = `devc:${row.dataset.device}`;
+  const select = el("plot-signal");
+  if (select) select.value = value;
+  onPlotSignalChange(value);
+});
+restoreDevicePanelState();
+
 el("upload-folder-name").addEventListener("input", updateUploadTargetHint);
 el("upload-parent-select").addEventListener("change", updateUploadTargetHint);
 el("upload-input").addEventListener("change", (ev) => {

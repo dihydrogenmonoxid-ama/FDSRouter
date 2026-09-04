@@ -53,7 +53,11 @@ async def poll_loop(config: Config, state: SystemState, broadcast: Broadcast) ->
             try:
                 snapshot = _sample()
                 snapshot["cpu_temperature_c"] = temperature.read_cpu_temperature(config.temperature_enabled)
-                snapshot["fan_rpm"] = fans.read_fan_speed_rpm()
+                fan = fans.read_fan_speed()
+                snapshot["fan_rpm"] = fan.rpm
+                # Carried along so the panel can say why the field is empty instead of
+                # showing a bare dash that looks like a broken readout.
+                snapshot["fan_status"] = fan.reason
                 state.latest = snapshot
                 await broadcast({"type": "system_metrics", **snapshot})
             except Exception:

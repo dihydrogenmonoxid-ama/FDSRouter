@@ -55,6 +55,8 @@ const STRINGS = {
     ram: "RAM",
     cpuTemperature: "CPU-Temperatur",
     fanSpeed: "Lüfter",
+    fanNoSensors: "Keine Lüftersensoren gefunden. Unter Linux fehlt meist das Kernelmodul des Sensor-Chips — 'sudo sensors-detect' aus dem Paket lm-sensors richtet es ein.",
+    fanUnsupported: "Diese Plattform stellt keine Lüfterdrehzahl bereit.",
 
     consoleLog: "Konsolen-Log",
     viewLog: "Log anzeigen",
@@ -92,7 +94,8 @@ const STRINGS = {
     tableRamPercent: "RAM %",
     limitingMeshTitle: "Limitierendes Mesh",
     limitingMeshValue: "Mesh {mesh}",
-    thermocouplesTitle: "Thermoelemente",
+    thermocouplesTitle: "Messstellen (DEVC)",
+    devcPickHint: "Zeile anklicken, um die Messstelle im Diagramm anzuzeigen.",
     tableDevice: "Gerät",
     tableValue: "Wert",
     noDevices: "Keine Geräte im Fall definiert.",
@@ -234,6 +237,8 @@ const STRINGS = {
     ram: "RAM",
     cpuTemperature: "CPU temperature",
     fanSpeed: "Fan",
+    fanNoSensors: "No fan sensors found. On Linux the sensor chip's kernel module is usually missing — 'sudo sensors-detect' from the lm-sensors package sets it up.",
+    fanUnsupported: "This platform does not expose fan speeds.",
 
     consoleLog: "Console log",
     viewLog: "View log",
@@ -271,7 +276,8 @@ const STRINGS = {
     tableRamPercent: "RAM %",
     limitingMeshTitle: "Limiting mesh",
     limitingMeshValue: "Mesh {mesh}",
-    thermocouplesTitle: "Thermocouples",
+    thermocouplesTitle: "Measurement points (DEVC)",
+    devcPickHint: "Click a row to plot that measurement point.",
     tableDevice: "Device",
     tableValue: "Value",
     noDevices: "No devices defined in this case.",
@@ -370,7 +376,9 @@ function getLang() {
   } catch (e) {
     // localStorage unavailable -- fall through to default
   }
-  return "de";
+  // English by default: the tool is used beyond German-speaking offices, and every operator
+  // who prefers German switches once in the settings, which is then remembered.
+  return "en";
 }
 
 function setLang(lang) {
@@ -403,7 +411,7 @@ function setTheme(theme) {
 
 function t(key, vars) {
   const lang = getLang();
-  let template = (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.de[key] || key;
+  let template = (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || key;
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
       template = template.replaceAll(`{${k}}`, v);

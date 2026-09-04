@@ -41,7 +41,9 @@ who no longer want to babysit the queue by hand.
   count, recalibrated by every completed run on the same machine
 - **Live monitoring** — CPU (total and per core), RAM, temperature and fan speed (best effort),
   per-MPI-process status, plus simulation time, time step size, heat release rate and device
-  readings parsed live from `.out`, `_hrr.csv` and `_devc.csv`
+  readings parsed live from `.out`, `_hrr.csv` and `_devc.csv`. The live chart (HRR or one DEVC
+  device) is drawn with [uPlot](https://github.com/leeoniya/uPlot) including a cursor readout;
+  the device list is a collapsible section from which any device can be put on the chart
 - **Console log** — the full `mpirun`/`fds` output per job, tailing live and still available
   after the run has finished
 - **External run detection** — FDS processes started outside FDSRouter are detected read-only
@@ -54,7 +56,10 @@ who no longer want to babysit the queue by hand.
   from the settings dialog, with a confirmation while a simulation is running
 - **Persistence** — queue, job history and metric time series live in SQLite and survive a
   restart
-- **Bilingual interface** (German/English), light and dark colour scheme
+- **Tray icon** (Linux desktop) — a small flame in the menu bar with status, open, restart,
+  update and stop; starts with the session
+- **Bilingual interface** — English by default, German switchable in the settings (the choice
+  is remembered in the browser); light and dark colour scheme
 - **Multi-node ready data model** — v1 only uses the local machine, but the node registration
   and heartbeat schema is already in place so further compute nodes can be attached later
 
@@ -91,6 +96,7 @@ cd FDSRouter
 | `--service` / `--no-service` | set up (or skip) the autostart service without asking |
 | `--service=system` | install a system-wide service instead of a user service |
 | `--host=0.0.0.0`, `--port=8080` | set address and port right away (see "Running it on the network") |
+| `--tray` / `--no-tray` | set up (or skip) the desktop tray icon |
 | `--dev` | also install `pytest` |
 | `--yes` | never ask (unattended installation) |
 
@@ -193,6 +199,28 @@ git pull
 systemctl --user restart fdsrouter       # or: sudo systemctl restart fdsrouter
 ```
 
+## Tray icon (Linux desktop)
+
+```bash
+./install.sh --tray
+```
+
+Adds a small flame to the menu bar that starts with the session
+(`~/.config/autostart/fdsrouter-tray.desktop`). The menu shows the status ("running: Atrium_v3"
+or "not reachable") and offers open interface, restart, update and stop — the same actions as
+the settings dialog, through the same API.
+
+While a simulation is running, the API refuses restart and stop; the tray reports that and
+points to the web interface, where it can be confirmed. So a menu entry can never end a running
+job.
+
+The icon deliberately does **not** live inside the service: systemd starts the service at boot,
+long before anyone logs in, and it has no display at all. It therefore gets its own small
+environment (`.venv-tray`, created with `--system-site-packages`), because `pystray`'s Linux
+backend needs the distribution package `python3-gi` — the service's own environment stays
+untouched. On GNOME the "AppIndicator and KStatusNotifierItem Support" extension is required as
+well, which Ubuntu ships by default.
+
 ## Configuration
 
 On the very first start, `config.yaml` is created in the current directory (template:
@@ -272,6 +300,22 @@ If the machine does not even answer `ping` from the workstation, the cause is th
 list the machine means little on its own: without `avahi-daemon` a Linux box does not announce
 itself over mDNS, and many scanners only evaluate ping replies.
 
+### Fan speed stays empty
+
+FDSRouter reads fans through `psutil.sensors_fans()` and, when that yields nothing, straight
+from `/sys/class/hwmon/*/fan*_input`. If the field still stays empty, the machine exposes no fan
+sensors — usually because the sensor chip's kernel module is not loaded:
+
+```bash
+sudo apt install lm-sensors
+sudo sensors-detect          # accept the questions with ENTER, let it add the modules
+sensors                      # shows what is readable afterwards
+```
+
+If `sensors` finds no fans either, the hardware does not expose them (common on servers and in
+virtual machines). No core functionality depends on it, and the reason is shown as a tooltip on
+the readout.
+
 ## Tests
 
 ```bash
@@ -300,6 +344,12 @@ deploy pipeline. The core logic lives in `fdsrouter/core`:
 | `external_jobs.py`  | detects FDS runs outside FDSRouter, strictly read-only                       |
 | `energy.py`         | reads a Home Assistant power sensor and accounts energy/cost                 |
 | `service_control.py`| drives the systemd service (restart, update, stop) for the settings dialog   |
+
+The frontend still needs no build step: the only third-party library is
+[uPlot](https://github.com/leeoniya/uPlot) for the live chart, vendored under
+`fdsrouter/static/vendor/` — no CDN at runtime, in line with the "local, no cloud dependency"
+rule. The tray icon lives in `fdsrouter/tray.py` and only ever talks to the HTTP API, so it runs
+independently of the service.
 
 Persistence through SQLite (`fdsrouter/db`), no separate database server. The data model
 consists of `node`, `job`, `run_metric_sample`, `out_file_metric` and `settings`.

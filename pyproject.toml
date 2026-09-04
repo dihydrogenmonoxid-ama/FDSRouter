@@ -22,6 +22,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+# Desktop tray icon; installed into its own environment by install.sh --tray, because the
+# Linux backend needs PyGObject from the distribution rather than from PyPI.
+tray = [
+    "pystray>=0.19",
+    "pillow>=10.0",
+]
 
 [project.scripts]
 fdsrouter = "fdsrouter.cli:main"
@@ -30,4 +36,4 @@ fdsrouter = "fdsrouter.cli:main"
 include = ["fdsrouter*"]
 
 [tool.setuptools.package-data]
-fdsrouter = ["static/*", "db/schema.sql"]
+fdsrouter = ["static/*", "static/vendor/*", "db/schema.sql"]

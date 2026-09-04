@@ -1,19 +1,21 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FDSRouter</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/vendor/uPlot.min.css" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="app-bar">
     <h1 class="wordmark">FDS<span>Router</span></h1>
-    <div id="node-status"><span class="dot"></span><span data-i18n="connecting">verbinde…</span></div>
+    <div id="node-status"><span class="dot"></span><span data-i18n="connecting">connecting…</span></div>
     <div class="spacer"></div>
     <div class="app-bar-actions">
-      <button id="new-job-btn" data-i18n="newJob">Neuer Job</button>
-      <button id="settings-btn" class="secondary" data-i18n="settings">Einstellungen</button>
+      <button id="new-job-btn" data-i18n="newJob">New Job</button>
+      <button id="settings-btn" class="secondary" data-i18n="settings">Settings</button>
     </div>
   </header>
 
@@ -21,16 +23,16 @@
     <div class="column">
       <section class="panel">
         <div class="panel-head">
-          <h2 data-i18n="queueTitle">Warteschlange</h2>
+          <h2 data-i18n="queueTitle">Queue</h2>
           <div class="spacer"></div>
           <label class="switch">
             <input type="checkbox" id="auto-advance-toggle" />
             <span class="switch-track"><span class="switch-thumb"></span></span>
-            <span data-i18n="autoAdvanceLabel">Automatisch fortsetzen</span>
+            <span data-i18n="autoAdvanceLabel">Auto-continue</span>
           </label>
         </div>
         <div class="panel-body">
-          <ul id="queue-list"><li class="note" data-i18n="queueLoading">Lade…</li></ul>
+          <ul id="queue-list"><li class="note" data-i18n="queueLoading">Loading…</li></ul>
         </div>
       </section>
 
@@ -40,7 +42,7 @@
         <div class="panel-body">
           <div class="readouts">
             <div class="readout">
-              <div class="readout-label" data-i18n="cpuTotal">CPU gesamt</div>
+              <div class="readout-label" data-i18n="cpuTotal">CPU total</div>
               <div class="readout-value"><span id="sys-cpu-percent">–</span><span class="readout-unit">%</span></div>
               <canvas id="cpu-sparkline" class="mini-plot"></canvas>
             </div>
@@ -49,31 +51,31 @@
               <div class="readout-value compact" id="sys-ram-combined">–</div>
             </div>
             <div class="readout">
-              <div class="readout-label" data-i18n="cpuTemperature">CPU-Temperatur</div>
+              <div class="readout-label" data-i18n="cpuTemperature">CPU temperature</div>
               <div class="readout-value"><span id="sys-temp">–</span><span class="readout-unit">°C</span></div>
             </div>
             <div class="readout">
-              <div class="readout-label" data-i18n="fanSpeed">Lüfter</div>
+              <div class="readout-label" data-i18n="fanSpeed">Fan</div>
               <div class="readout-value"><span id="sys-fan">–</span><span class="readout-unit">min⁻¹</span></div>
             </div>
           </div>
 
-          <div class="sub-head" data-i18n="perCoreTitle">CPU-Kerne (Verlauf)</div>
+          <div class="sub-head" data-i18n="perCoreTitle">CPU cores (history)</div>
           <div id="core-heatmap-wrap"><canvas id="core-heatmap"></canvas></div>
         </div>
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2 data-i18n="processDetailsTitle">Prozessdetails</h2></div>
+        <div class="panel-head"><h2 data-i18n="processDetailsTitle">Process details</h2></div>
         <div class="panel-body">
-          <div id="dashboard-empty" class="note" data-i18n="noActiveJob">Kein Job aktiv.</div>
+          <div id="dashboard-empty" class="note" data-i18n="noActiveJob">No active job.</div>
           <div id="dashboard" hidden>
-            <div class="sub-head" data-i18n="mpiProcessesTitle">MPI-Prozesse</div>
+            <div class="sub-head" data-i18n="mpiProcessesTitle">MPI processes</div>
             <table class="data-table">
               <thead>
                 <tr>
                   <th data-i18n="tablePid">PID</th>
-                  <th data-i18n="tableCore">Kern</th>
+                  <th data-i18n="tableCore">Core</th>
                   <th class="n" data-i18n="tableCpuPercent">CPU %</th>
                   <th class="n" data-i18n="tableRamPercent">RAM %</th>
                 </tr>
@@ -81,24 +83,30 @@
               <tbody id="proc-tbody"></tbody>
             </table>
 
-            <div class="sub-head" data-i18n="limitingMeshTitle">Limitierendes Mesh</div>
+            <div class="sub-head" data-i18n="limitingMeshTitle">Limiting mesh</div>
             <div id="limiting-mesh" class="mono note">–</div>
 
-            <div class="sub-head" data-i18n="thermocouplesTitle">Thermoelemente</div>
-            <table class="data-table">
-              <thead>
-                <tr><th data-i18n="tableDevice">Gerät</th><th class="n" data-i18n="tableValue">Wert</th></tr>
-              </thead>
-              <tbody id="devc-tbody">
-                <tr><td colspan="2" class="empty" data-i18n="noDevices">Keine Geräte im Fall definiert.</td></tr>
-              </tbody>
-            </table>
+            <details id="devc-panel" class="panel-section">
+              <summary>
+                <span data-i18n="thermocouplesTitle">Measurement points (DEVC)</span>
+                <span id="devc-count" class="badge">0</span>
+              </summary>
+              <div class="hint" data-i18n="devcPickHint">Click a row to plot that measurement point.</div>
+              <table class="data-table">
+                <thead>
+                  <tr><th data-i18n="tableDevice">Device</th><th class="n" data-i18n="tableValue">Value</th></tr>
+                </thead>
+                <tbody id="devc-tbody">
+                  <tr><td colspan="2" class="empty" data-i18n="noDevices">No devices defined in this case.</td></tr>
+                </tbody>
+              </table>
+            </details>
           </div>
         </div>
       </section>
 
       <section class="panel" id="external-jobs-panel" hidden>
-        <div class="panel-head"><h2 data-i18n="externalJobsTitle">Erkannte externe FDS-Läufe</h2></div>
+        <div class="panel-head"><h2 data-i18n="externalJobsTitle">Detected external FDS runs</h2></div>
         <div class="panel-body"><ul id="external-jobs-list"></ul></div>
       </section>
     </div>
@@ -106,17 +114,17 @@
     <div class="column">
       <section class="panel">
         <div class="panel-head">
-          <h2 data-i18n="historyTitle">Historie</h2>
+          <h2 data-i18n="historyTitle">History</h2>
           <div class="spacer"></div>
-          <button id="archive-btn" class="secondary small" data-i18n="archiveButton">Archivieren</button>
+          <button id="archive-btn" class="secondary small" data-i18n="archiveButton">Archive</button>
           <label class="switch">
             <input type="checkbox" id="archive-view-toggle" />
             <span class="switch-track"><span class="switch-thumb"></span></span>
-            <span data-i18n="archiveViewLabel">Archiv</span>
+            <span data-i18n="archiveViewLabel">Archive</span>
           </label>
         </div>
         <div class="panel-body">
-          <ul id="history-list"><li class="note" data-i18n="historyEmpty">Noch keine abgeschlossenen Läufe.</li></ul>
+          <ul id="history-list"><li class="note" data-i18n="historyEmpty">No completed runs yet.</li></ul>
         </div>
       </section>
     </div>
@@ -126,108 +134,107 @@
        hand the backend a real filesystem path, which mpirun/fds needs as the case directory. -->
   <div id="new-job-overlay" class="overlay" hidden>
     <div class="dialog">
-      <div class="dialog-head"><h2 data-i18n="newJobModalTitle">Neuer Job</h2></div>
+      <div class="dialog-head"><h2 data-i18n="newJobModalTitle">New Job</h2></div>
       <div class="dialog-body">
-        <div class="sub-head" data-i18n="uploadSectionTitle">Vom Rechner hochladen</div>
+        <div class="sub-head" data-i18n="uploadSectionTitle">Upload from your computer</div>
         <div class="field">
           <input id="upload-input" type="file" multiple accept=".fds,.csv,.txt,.dat,.inc" />
-          <button id="upload-btn" class="secondary small" data-i18n="uploadButton" disabled>Hochladen</button>
+          <button id="upload-btn" class="secondary small" data-i18n="uploadButton" disabled>Upload</button>
         </div>
         <div class="field">
-          <label for="upload-folder-name" data-i18n="uploadFolderLabel">Zielordner</label>
-          <input id="upload-folder-name" type="text" data-i18n-placeholder="uploadFolderPlaceholder"
-                 placeholder="automatisch aus Dateiname" />
+          <label for="upload-folder-name" data-i18n="uploadFolderLabel">Target folder</label>
+          <input id="upload-folder-name" type="text" data-i18n-placeholder="uploadFolderPlaceholder" placeholder="derived from the file name" />
         </div>
         <div class="field">
-          <label for="upload-parent-select" data-i18n="uploadParentLabel">Anlegen in</label>
+          <label for="upload-parent-select" data-i18n="uploadParentLabel">Create in</label>
           <select id="upload-parent-select">
-            <option value="default" data-i18n="uploadParentDefault">Upload-Verzeichnis</option>
-            <option value="browsed" data-i18n="uploadParentBrowsed">geöffnetem Verzeichnis</option>
+            <option value="default" data-i18n="uploadParentDefault">upload directory</option>
+            <option value="browsed" data-i18n="uploadParentBrowsed">the browsed directory</option>
           </select>
         </div>
         <div id="upload-target-path" class="hint"></div>
-        <div id="upload-status" class="hint" data-i18n="uploadHint">Genau eine .fds-Datei, weitere Falldateien optional.</div>
+        <div id="upload-status" class="hint" data-i18n="uploadHint">Exactly one .fds file, further case files optional.</div>
 
-        <div class="sub-head" data-i18n="browseSectionTitle">Auf dem Server auswählen</div>
+        <div class="sub-head" data-i18n="browseSectionTitle">Choose on the server</div>
         <div id="browser-path">–</div>
         <ul id="browser-list"></ul>
 
         <div class="selection">
-          <div class="readout-label" data-i18n="selectedFile">Ausgewählte Datei</div>
-          <div id="selected-file-name" data-i18n="noFileSelected">Keine Datei ausgewählt.</div>
+          <div class="readout-label" data-i18n="selectedFile">Selected file</div>
+          <div id="selected-file-name" data-i18n="noFileSelected">No file selected.</div>
           <div id="selected-file-info"></div>
         </div>
 
         <div id="mpi-row" class="field" hidden>
-          <label for="mpi-processes" data-i18n="mpiProcessesLabel">MPI-Prozesse</label>
+          <label for="mpi-processes" data-i18n="mpiProcessesLabel">MPI processes</label>
           <input id="mpi-processes" type="number" min="1" value="1" />
           <span id="mpi-hint" class="hint"></span>
         </div>
       </div>
       <div class="dialog-actions">
-        <button id="new-job-cancel" class="secondary" data-i18n="cancel">Abbrechen</button>
-        <button id="new-job-submit" data-i18n="enqueue" disabled>Einreihen</button>
+        <button id="new-job-cancel" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="new-job-submit" data-i18n="enqueue" disabled>Enqueue</button>
       </div>
     </div>
   </div>
 
   <div id="settings-overlay" class="overlay" hidden>
     <div class="dialog">
-      <div class="dialog-head"><h2 data-i18n="settingsModalTitle">Einstellungen</h2></div>
+      <div class="dialog-head"><h2 data-i18n="settingsModalTitle">Settings</h2></div>
       <div class="dialog-body">
-        <div class="sub-head" data-i18n="appearanceSettingsTitle">Darstellung</div>
+        <div class="sub-head" data-i18n="appearanceSettingsTitle">Appearance</div>
         <div class="field">
-          <label for="language-select" data-i18n="languageLabel">Sprache</label>
+          <label for="language-select" data-i18n="languageLabel">Language</label>
           <select id="language-select">
             <option value="de">Deutsch</option>
             <option value="en">English</option>
           </select>
         </div>
         <div class="field">
-          <label for="theme-select" data-i18n="themeLabel">Farbschema</label>
+          <label for="theme-select" data-i18n="themeLabel">Colour scheme</label>
           <select id="theme-select">
-            <option value="dark" data-i18n="themeDark">Dunkel</option>
-            <option value="light" data-i18n="themeLight">Hell</option>
+            <option value="dark" data-i18n="themeDark">Dark</option>
+            <option value="light" data-i18n="themeLight">Light</option>
           </select>
         </div>
 
-        <div class="sub-head" data-i18n="energySettingsTitle">Energie / Stromkosten</div>
+        <div class="sub-head" data-i18n="energySettingsTitle">Energy / electricity cost</div>
         <div class="field">
-          <label for="ha-base-url" data-i18n="haBaseUrlLabel">Home-Assistant-URL</label>
+          <label for="ha-base-url" data-i18n="haBaseUrlLabel">Home Assistant URL</label>
           <input id="ha-base-url" type="text" placeholder="http://homeassistant.local:8123" />
         </div>
         <div class="field">
-          <label for="ha-token" data-i18n="haTokenLabel">Access Token</label>
+          <label for="ha-token" data-i18n="haTokenLabel">Access token</label>
           <input id="ha-token" type="password" placeholder="•••" />
         </div>
         <div class="field">
-          <label for="ha-entity-id" data-i18n="haEntityLabel">Entity-ID (Leistung, W)</label>
+          <label for="ha-entity-id" data-i18n="haEntityLabel">Entity ID (power, W)</label>
           <input id="ha-entity-id" type="text" placeholder="sensor.workstation_power" />
         </div>
         <div class="field">
-          <label for="electricity-price" data-i18n="electricityPriceLabel">Strompreis (€/kWh)</label>
+          <label for="electricity-price" data-i18n="electricityPriceLabel">Electricity price (€/kWh)</label>
           <input id="electricity-price" type="number" step="0.01" min="0" />
         </div>
         <div class="field">
-          <label for="solar-powered" data-i18n="solarPoweredLabel">PV-Strom</label>
+          <label for="solar-powered" data-i18n="solarPoweredLabel">Solar-powered</label>
           <input id="solar-powered" type="checkbox" />
         </div>
         <div class="field">
           <label></label>
-          <button id="ha-test-btn" class="secondary small" data-i18n="haTestButton">Verbindung testen</button>
+          <button id="ha-test-btn" class="secondary small" data-i18n="haTestButton">Test connection</button>
           <span id="ha-test-result" class="hint"></span>
         </div>
 
-        <div class="sub-head" data-i18n="serviceSettingsTitle">Dienst</div>
+        <div class="sub-head" data-i18n="serviceSettingsTitle">Service</div>
         <div class="field">
           <label data-i18n="serviceVersionLabel">Version</label>
           <span id="service-version" class="hint">–</span>
         </div>
         <div class="field wrap">
-          <label data-i18n="serviceActionsLabel">Steuerung</label>
-          <button id="service-update-btn" class="secondary small" data-i18n="serviceUpdateButton" disabled>Aktualisieren</button>
-          <button id="service-restart-btn" class="secondary small" data-i18n="serviceRestartButton" disabled>Neu starten</button>
-          <button id="service-stop-btn" class="danger small" data-i18n="serviceStopButton" disabled>Beenden</button>
+          <label data-i18n="serviceActionsLabel">Control</label>
+          <button id="service-update-btn" class="secondary small" data-i18n="serviceUpdateButton" disabled>Update</button>
+          <button id="service-restart-btn" class="secondary small" data-i18n="serviceRestartButton" disabled>Restart</button>
+          <button id="service-stop-btn" class="danger small" data-i18n="serviceStopButton" disabled>Stop</button>
         </div>
         <div class="field">
           <label></label>
@@ -235,8 +242,8 @@
         </div>
       </div>
       <div class="dialog-actions">
-        <button id="settings-close" class="secondary" data-i18n="close">Schließen</button>
-        <button id="settings-save" data-i18n="save">Speichern</button>
+        <button id="settings-close" class="secondary" data-i18n="close">Close</button>
+        <button id="settings-save" data-i18n="save">Save</button>
       </div>
     </div>
   </div>
@@ -244,17 +251,18 @@
   <!-- Raw stdout/stderr of a job, live-tailed while it is the running job -->
   <div id="console-overlay" class="overlay" hidden>
     <div class="dialog wide">
-      <div class="dialog-head"><h2 data-i18n="consoleLog">Konsolen-Log</h2></div>
+      <div class="dialog-head"><h2 data-i18n="consoleLog">Console log</h2></div>
       <div class="dialog-body"><pre id="console-log-content" class="console"></pre></div>
       <div class="dialog-actions">
-        <button id="console-copy" class="secondary" data-i18n="copyLog" disabled>Kopieren</button>
-        <button id="console-download" class="secondary" data-i18n="downloadLog" disabled>Als .txt speichern</button>
+        <button id="console-copy" class="secondary" data-i18n="copyLog" disabled>Copy</button>
+        <button id="console-download" class="secondary" data-i18n="downloadLog" disabled>Save as .txt</button>
         <span class="spacer"></span>
-        <button id="console-close" class="secondary" data-i18n="close">Schließen</button>
+        <button id="console-close" class="secondary" data-i18n="close">Close</button>
       </div>
     </div>
   </div>
 
+  <script src="/vendor/uPlot.iife.min.js"></script>
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
 </body>

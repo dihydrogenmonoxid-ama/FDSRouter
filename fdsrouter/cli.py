@@ -27,6 +27,12 @@ def start(args: argparse.Namespace) -> None:
     uvicorn.run(app, host=config.host, port=config.port)
 
 
+def tray(args: argparse.Namespace) -> None:
+    from fdsrouter import tray as tray_module
+
+    raise SystemExit(tray_module.main(base_url=args.url, project_dir=Path.cwd()))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="fdsrouter")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -35,6 +41,10 @@ def main() -> None:
     start_parser.add_argument("--port", type=int, default=None)
     start_parser.add_argument("--no-browser", action="store_true")
     start_parser.set_defaults(func=start)
+
+    tray_parser = subparsers.add_parser("tray", help="Tray-Icon im Desktop starten")
+    tray_parser.add_argument("--url", default=None, help="z. B. http://127.0.0.1:8000")
+    tray_parser.set_defaults(func=tray)
 
     args = parser.parse_args()
     args.func(args)

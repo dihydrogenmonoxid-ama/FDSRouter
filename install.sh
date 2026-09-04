@@ -19,6 +19,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON_BIN=""
 SERVICE_MODE="ask"   # ask | user | system | none
+TRAY_MODE="ask"      # ask | yes | none
 ASSUME_YES=0
 WITH_DEV=0
 HOST_OVERRIDE=""
@@ -54,6 +55,8 @@ FDSRouter installieren (Linux und macOS)
   ./install.sh --no-service --yes  unbeaufsichtigt installieren, ohne Dienst
 
 Weitere Optionen:
+  --tray           Tray-Icon im Desktop einrichten (Autostart in der Sitzung)
+  --no-tray        Tray-Icon ueberspringen
   --dev            zusaetzlich pytest installieren
   --host=ADRESSE   Adresse in config.yaml setzen (z. B. 0.0.0.0 fuer Netzbetrieb)
   --port=PORT      Port in config.yaml setzen
@@ -69,6 +72,8 @@ for arg in "$@"; do
         --service=user)    SERVICE_MODE="user" ;;
         --service=system)  SERVICE_MODE="system" ;;
         --no-service)      SERVICE_MODE="none" ;;
+        --tray)            TRAY_MODE="yes" ;;
+        --no-tray)         TRAY_MODE="none" ;;
         --host=*)          HOST_OVERRIDE="${arg#*=}" ;;
         --port=*)          PORT_OVERRIDE="${arg#*=}" ;;
         --yes|-y)          ASSUME_YES=1 ;;
@@ -329,6 +334,69 @@ esac
 # --------------------------------------------------------------------------------------
 # 6. Summary
 # --------------------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------------------
+# 5b. Desktop tray icon
+# --------------------------------------------------------------------------------------
+
+install_tray() {
+    local tray_venv="$REPO_DIR/.venv-tray"
+
+    # pystray's Linux backend talks to the desktop through PyGObject, which is a distribution
+    # package (building it from PyPI needs the whole GObject toolchain). Hence a second, small
+    # environment with --system-site-packages that can see the apt-installed python3-gi -- the
+    # service venv stays untouched and self-contained.
+    if [ -n "$APT_GET" ]; then
+        apt_install python3-gi gir1.2-ayatanaappindicator3-0.1 || \
+            warn "GTK-Pakete konnten nicht installiert werden -- das Tray-Icon bleibt unter GNOME evtl. unsichtbar."
+    fi
+
+    if [ ! -f "$tray_venv/pyvenv.cfg" ]; then
+        "$PYTHON_BIN" -m venv --system-site-packages "$tray_venv" || {
+            warn "Tray-Umgebung konnte nicht angelegt werden -- Tray-Icon uebersprungen."
+            return 1
+        }
+    fi
+    "$tray_venv/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+    if ! (cd "$REPO_DIR" && "$tray_venv/bin/python" -m pip install --quiet -e ".[tray]"); then
+        warn "pystray/Pillow konnten nicht installiert werden -- Tray-Icon uebersprungen."
+        return 1
+    fi
+    ok "Tray-Umgebung: $tray_venv"
+
+    local autostart_dir="$HOME/.config/autostart"
+    mkdir -p "$autostart_dir"
+    cat > "$autostart_dir/fdsrouter-tray.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=FDSRouter
+Comment=Warteschlangen-Steuerung fuer FDS-Simulationen
+Exec=$tray_venv/bin/fdsrouter tray
+Path=$REPO_DIR
+Icon=$REPO_DIR/fdsrouter/static/icon.svg
+Terminal=false
+X-GNOME-Autostart-enabled=true
+DESKTOP
+    ok "Autostart-Eintrag: $autostart_dir/fdsrouter-tray.desktop"
+    note "Startet mit der naechsten Anmeldung; sofort starten mit:"
+    note "    (cd $REPO_DIR && $tray_venv/bin/fdsrouter tray &)"
+}
+
+if [ "$TRAY_MODE" = "ask" ]; then
+    # Only worth offering where there is a desktop session to put an icon into.
+    if [ -n "${XDG_CURRENT_DESKTOP:-}" ] || [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        info "Tray-Icon einrichten?"
+        note "Kleines Flammen-Symbol in der Menueleiste mit Oeffnen, Neustart, Update und Beenden."
+        if confirm "Tray-Icon fuer den Desktop einrichten?"; then TRAY_MODE="yes"; else TRAY_MODE="none"; fi
+    else
+        TRAY_MODE="none"
+    fi
+fi
+
+if [ "$TRAY_MODE" = "yes" ]; then
+    info "Tray-Icon einrichten"
+    install_tray || true
+fi
 
 read_config() {  # read_config key default -- read one value out of config.yaml
     "$VENV_PY" - "$REPO_DIR/config.yaml" "$1" "$2" <<'PY'
