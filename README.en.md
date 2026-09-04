@@ -65,6 +65,37 @@ who no longer want to babysit the queue by hand.
 
 ## Installation
 
+### Recommended: the installer script (Linux and macOS)
+
+```bash
+git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
+cd FDSRouter
+./install.sh
+```
+
+`install.sh` takes care of everything you would otherwise do by hand:
+
+- checks for a Python 3.11+ interpreter and, on Ubuntu/Debian, installs the separately shipped
+  `venv` package when it is missing (asking for `sudo`)
+- creates the `.venv` virtual environment and installs FDSRouter into it, which also keeps
+  Ubuntu's `externally-managed-environment` lock out of the way
+- writes `config.yaml`, looking for `fds`/`mpirun` on `PATH` as well as in the usual
+  installation directories (`/opt/FDS…`, `/usr/local/FDS…`, home, `/Applications`)
+- finally asks whether FDSRouter should start with the machine (see [Autostart](#autostart-systemd))
+
+| Option | Effect |
+|--------|--------|
+| `--service` / `--no-service` | set up (or skip) the autostart service without asking |
+| `--service=system` | install a system-wide service instead of a user service |
+| `--host=0.0.0.0`, `--port=8080` | set address and port right away (see "Running it on the network") |
+| `--dev` | also install `pytest` |
+| `--yes` | never ask (unattended installation) |
+
+The script can be re-run at any time — existing values in `config.yaml` and an edited
+`service.env` are kept.
+
+### By hand
+
 ```bash
 git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
 cd FDSRouter
@@ -78,6 +109,18 @@ psutil, PyYAML, httpx) and the `fdsrouter` console command, plus `pytest` for th
 `pip install -r requirements.txt` is enough as well — then start it with
 `python -m fdsrouter.cli start` instead of the `fdsrouter` command.
 
+On Ubuntu/Debian, `sudo apt install git python3-venv` is needed once up front; without that
+package `python3 -m venv` aborts with "ensurepip is not available".
+
+### Common Ubuntu/Debian pitfalls
+
+| Message | Cause and fix |
+|---------|---------------|
+| `ensurepip is not available` / `apt install python3.X-venv` | Debian and Ubuntu ship `venv` separately from the interpreter. Run `sudo apt install python3-venv` (or exactly the package named in the error) — `install.sh` does this for you. |
+| `error: externally-managed-environment` | PEP 668 blocks `pip` outside a virtual environment. Do not work around it with `--break-system-packages`; create the `.venv` and use `.venv/bin/pip`. |
+| `Could not get lock /var/lib/dpkg/lock-frontend … (packagekitd)` | The graphical updater is holding `apt`. Wait a moment or close "Software Updater"; `install.sh` waits up to three minutes on its own via `DPkg::Lock::Timeout`. |
+| `Package 'python' has no installation candidate` | The package is called `python3`. For the bare `python` command add `python-is-python3` — FDSRouter does not need it. |
+
 ## Running
 
 ```bash
@@ -86,6 +129,50 @@ fdsrouter start
 
 Starts the local service and opens the interface at `http://127.0.0.1:8000/` in your default
 browser. `--no-browser` keeps the browser closed, `--port <PORT>` overrides the port.
+
+Without activating the virtual environment, `.venv/bin/fdsrouter start` works just as well.
+
+## Autostart (systemd)
+
+To keep FDSRouter running in the background across reboots, `./install.sh --service` registers
+a systemd service (you can do this at any time, also after the initial install):
+
+```bash
+./install.sh --service            # user service (default, recommended)
+./install.sh --service=system     # system-wide service under /etc/systemd/system
+```
+
+The **user service** goes to `~/.config/systemd/user/fdsrouter.service`, runs under your own
+account and needs no root privileges. So that it also starts at boot without anyone logging in,
+the script runs `sudo loginctl enable-linger $USER` once. The **system-wide service** is the
+alternative for shared compute servers; it starts with `multi-user.target` but still runs under
+the account that installed it.
+
+| Task | User service | System-wide service |
+|------|--------------|---------------------|
+| Status | `systemctl --user status fdsrouter` | `systemctl status fdsrouter` |
+| Follow the log | `journalctl --user -u fdsrouter -f` | `journalctl -u fdsrouter -f` |
+| Restart | `systemctl --user restart fdsrouter` | `sudo systemctl restart fdsrouter` |
+| Disable autostart | `systemctl --user disable --now fdsrouter` | `sudo systemctl disable --now fdsrouter` |
+
+A service starts without your shell environment, so it knows neither the `PATH` entries nor the
+variables the FDS installer appends to `~/.bashrc`. That is why the launcher
+`scripts/fdsrouter-service.sh` sources `service.env` from the project directory first —
+`install.sh` writes it with the `FDS6VARS.sh` it found and the matching `PATH` entries. The file
+is installation-specific, is not version-controlled and can be edited freely.
+
+**Careful when restarting the service:** systemd also terminates the running `fds` processes,
+since they are children of the service. Check whether a simulation is running before `restart`
+or `stop`.
+
+Updating:
+
+```bash
+cd ~/FDSRouter
+git pull
+./install.sh --no-service --yes          # pull in dependency changes
+systemctl --user restart fdsrouter       # or: sudo systemctl restart fdsrouter
+```
 
 ## Configuration
 
@@ -118,6 +205,9 @@ For office use — service on the compute server, operated from a workstation �
 ```yaml
 host: "0.0.0.0"
 ```
+
+`./install.sh --host=0.0.0.0 --no-service --yes` sets the same value; when FDSRouter already
+runs as a service, the change takes effect after `systemctl --user restart fdsrouter`.
 
 The interface is then available at `http://<server-ip>:8000/`. Cases are uploaded through
 "Neuer Job → Vom Rechner hochladen" (exactly one `.fds` file, further case files such as ramps

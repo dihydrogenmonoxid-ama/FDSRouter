@@ -1,5 +1,6 @@
 # Local configuration and runtime data -- generated per installation, never shared
 config.yaml
+service.env
 data/
 
 # Personal working notes and agent instructions -- not part of the published project

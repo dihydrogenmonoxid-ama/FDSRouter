@@ -62,6 +62,37 @@ verwalten wollen.
 
 ## Installation
 
+### Empfohlen: Installationsskript (Linux und macOS)
+
+```bash
+git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
+cd FDSRouter
+./install.sh
+```
+
+`install.sh` übernimmt alles, was sonst von Hand nötig wäre:
+
+- prüft, ob ein Python 3.11+ vorhanden ist, und installiert unter Ubuntu/Debian das getrennt
+  ausgelieferte `venv`-Paket bei Bedarf nach (fragt dafür nach `sudo`)
+- legt die virtuelle Umgebung `.venv` an und installiert FDSRouter hinein — dadurch greift auch
+  Ubuntus `externally-managed-environment`-Sperre nicht
+- schreibt `config.yaml` und sucht `fds`/`mpirun` nicht nur im `PATH`, sondern auch in den
+  üblichen Installationsverzeichnissen (`/opt/FDS…`, `/usr/local/FDS…`, Home, `/Applications`)
+- fragt zum Schluss, ob FDSRouter automatisch mitstarten soll (siehe [Autostart](#autostart-systemd))
+
+| Option | Wirkung |
+|--------|---------|
+| `--service` / `--no-service` | Autostart-Dienst ohne Rückfrage einrichten bzw. überspringen |
+| `--service=system` | systemweiten Dienst statt eines Benutzerdienstes anlegen |
+| `--host=0.0.0.0`, `--port=8080` | Adresse und Port direkt setzen (siehe „Betrieb im Netzwerk") |
+| `--dev` | zusätzlich `pytest` installieren |
+| `--yes` | ohne Rückfragen durchlaufen (unbeaufsichtigte Installation) |
+
+Das Skript lässt sich jederzeit erneut ausführen — vorhandene Werte in `config.yaml` und eine
+angepasste `service.env` bleiben dabei erhalten.
+
+### Von Hand
+
 ```bash
 git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
 cd FDSRouter
@@ -75,6 +106,18 @@ psutil, PyYAML, httpx) und den Console-Befehl `fdsrouter`, sowie `pytest` für d
 Alternativ genügt `pip install -r requirements.txt`, dann startet man über
 `python -m fdsrouter.cli start` statt über den `fdsrouter`-Befehl.
 
+Unter Ubuntu/Debian ist vorher einmalig `sudo apt install git python3-venv` nötig; ohne dieses
+Paket bricht `python3 -m venv` mit „ensurepip is not available" ab.
+
+### Stolpersteine unter Ubuntu/Debian
+
+| Meldung | Ursache und Abhilfe |
+|---------|---------------------|
+| `ensurepip is not available` / `apt install python3.X-venv` | Debian und Ubuntu liefern `venv` getrennt vom Interpreter aus. `sudo apt install python3-venv` (bzw. genau das im Fehlertext genannte Paket) — `install.sh` erledigt das selbst. |
+| `error: externally-managed-environment` | `pip` außerhalb einer virtuellen Umgebung ist auf Systemen mit PEP 668 gesperrt. Nicht mit `--break-system-packages` umgehen, sondern die `.venv` anlegen und `.venv/bin/pip` verwenden. |
+| `Sperre /var/lib/dpkg/lock-frontend … (packagekitd)` | Die grafische Aktualisierungsverwaltung hält `apt` gerade belegt. Kurz warten oder „Software-Aktualisierung" schließen; `install.sh` wartet dank `DPkg::Lock::Timeout` von sich aus bis zu drei Minuten. |
+| `Für Paket »python« existiert kein Installationskandidat` | Das Paket heißt `python3`. Für den Befehl `python` zusätzlich `python-is-python3` installieren — FDSRouter braucht das nicht. |
+
 ## Starten
 
 ```bash
@@ -84,6 +127,51 @@ fdsrouter start
 Startet den lokalen Dienst und öffnet automatisch den Standardbrowser mit der Oberfläche unter
 `http://127.0.0.1:8000/`. Mit `--no-browser` bleibt der Browser zu, mit `--port <PORT>`
 lässt sich der Port überschreiben.
+
+Ohne aktivierte virtuelle Umgebung genügt auch der direkte Aufruf `.venv/bin/fdsrouter start`.
+
+## Autostart (systemd)
+
+Damit FDSRouter dauerhaft im Hintergrund läuft und einen Neustart des Rechners übersteht,
+richtet `./install.sh --service` einen systemd-Dienst ein (nachträglich jederzeit möglich):
+
+```bash
+./install.sh --service            # Benutzerdienst (Standard, empfohlen)
+./install.sh --service=system     # systemweiter Dienst unter /etc/systemd/system
+```
+
+Der **Benutzerdienst** landet in `~/.config/systemd/user/fdsrouter.service`, läuft unter der
+eigenen Kennung und braucht keine Root-Rechte. Damit er auch ohne Anmeldung schon beim
+Hochfahren startet, aktiviert das Skript einmalig `sudo loginctl enable-linger $USER`. Der
+**systemweite Dienst** ist die Alternative für Rechenserver, auf denen mehrere Personen
+arbeiten; er startet mit `multi-user.target`, läuft aber ebenfalls unter der installierenden
+Kennung.
+
+| Aufgabe | Benutzerdienst | Systemweiter Dienst |
+|---------|----------------|---------------------|
+| Status | `systemctl --user status fdsrouter` | `systemctl status fdsrouter` |
+| Log live | `journalctl --user -u fdsrouter -f` | `journalctl -u fdsrouter -f` |
+| Neu starten | `systemctl --user restart fdsrouter` | `sudo systemctl restart fdsrouter` |
+| Autostart aus | `systemctl --user disable --now fdsrouter` | `sudo systemctl disable --now fdsrouter` |
+
+Ein Dienst startet ohne die Shell-Umgebung des Benutzers, kennt also weder die `PATH`-Einträge
+noch die Variablen, die das FDS-Installationsprogramm der `~/.bashrc` hinzufügt. Deshalb liest
+der Starter `scripts/fdsrouter-service.sh` vorher die Datei `service.env` im Projektverzeichnis
+ein — `install.sh` legt sie mit dem gefundenen `FDS6VARS.sh` und den passenden `PATH`-Einträgen
+an. Sie ist installationsspezifisch, wird nicht mit versioniert und lässt sich frei anpassen.
+
+**Achtung beim Neustart des Dienstes:** systemd beendet dabei auch die laufenden `fds`-Prozesse,
+weil sie Kindprozesse des Dienstes sind. Vor `restart` oder `stop` also prüfen, ob gerade eine
+Simulation läuft.
+
+Aktualisieren:
+
+```bash
+cd ~/FDSRouter
+git pull
+./install.sh --no-service --yes          # Abhängigkeiten nachziehen
+systemctl --user restart fdsrouter       # bzw. sudo systemctl restart fdsrouter
+```
 
 ## Konfiguration
 
@@ -116,6 +204,10 @@ genügt in der `config.yaml`:
 ```yaml
 host: "0.0.0.0"
 ```
+
+Alternativ setzt `./install.sh --host=0.0.0.0 --no-service --yes` denselben Wert; läuft
+FDSRouter bereits als Dienst, wird die Änderung erst mit `systemctl --user restart fdsrouter`
+wirksam.
 
 Danach ist die Oberfläche unter `http://<server-ip>:8000/` erreichbar. Fälle lädt man über
 „Neuer Job → Vom Rechner hochladen" hoch (genau eine `.fds`-Datei, weitere Falldateien wie
