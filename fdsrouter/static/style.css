@@ -1076,3 +1076,54 @@ button.small { font-size: 11px; padding: 5px 9px; }
 
 /* The unit belongs with the reading, but typeset quieter than the number. */
 .data-table .u { margin-left: 4px; color: var(--text-faint); font-size: 10px; }
+
+/* ---------------------------------------------------------------- accounts -- */
+
+#user-badge { display: flex; align-items: center; gap: 8px; margin-right: 4px; }
+#user-badge #user-name { font-size: 11.5px; color: var(--text-dim); }
+
+.field textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  resize: vertical;
+}
+
+.hint.error { color: var(--err); }
+
+/* ---------------------------------------------------------------- job cards -- */
+
+/* Sits ahead of the job name in the history-card head; .job-head's space-between still pushes
+   the status badge to the far right with a third flex child present. */
+.job-head input.compare-check { accent-color: var(--accent); width: 14px; height: 14px; flex: none; }
+
+.job-name { cursor: pointer; }
+
+.audit-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.audit-list li { padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.audit-list li:last-child { border-bottom: none; }
+
+/* -------------------------------------------------------------- compare view -- */
+
+#compare-kpi-table { margin-top: 12px; }
+
+/* Printing the comparison report: everything but the compare dialog's own content drops away,
+   and the dialog is unclipped from the normal fixed-overlay layout so it prints like a page. */
+@media print {
+  body > *:not(#compare-overlay) { display: none !important; }
+  #compare-overlay { position: static; background: none; padding: 0; }
+  #compare-overlay .dialog { box-shadow: none; border: none; width: auto; max-width: none; }
+  #compare-overlay .dialog-actions { display: none; }
+}

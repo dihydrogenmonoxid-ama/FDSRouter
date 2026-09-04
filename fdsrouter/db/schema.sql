@@ -34,7 +34,10 @@ CREATE TABLE IF NOT EXISTS job (
     energy_cost_eur REAL,
     -- Set when a finished run is moved out of the history view. The row is kept: archived runs
     -- still calibrate the runtime estimator, they are just no longer shown by default.
-    archived_at TEXT
+    archived_at TEXT,
+    created_by TEXT,
+    project TEXT,
+    notes TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_status_queue ON job (status, queue_position);
@@ -73,3 +76,40 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Accounts. FDSRouter enforces a login as soon as at least one user exists, so an existing
+-- installation is never locked out by an update -- see core/auth.py.
+CREATE TABLE IF NOT EXISTS user (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    -- scrypt (stdlib hashlib), stored as algorithm$params$salt$hash. NULL for accounts that
+    -- authenticate through a reverse proxy instead of a password.
+    password_hash TEXT,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT
+);
+
+-- Only the hash of a session token is stored: a stolen database must not hand out live sessions.
+CREATE TABLE IF NOT EXISTS session (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_seen_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_user ON session (user_id);
+
+-- Who did what. Written for the actions that change what the machine is doing, so a shared
+-- compute node stays explainable after the fact.
+CREATE TABLE IF NOT EXISTS audit_entry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    username TEXT,
+    action TEXT NOT NULL,
+    job_id TEXT,
+    detail TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_entry (timestamp DESC);

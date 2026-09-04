@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 import psutil
 
 from fdsrouter.config import Config
-from fdsrouter.core import energy, job_runner, out_parser
+from fdsrouter.core import energy, job_runner, notifications, out_parser
 from fdsrouter.core.energy import EnergySettings, SETTINGS_KEYS as ENERGY_SETTINGS_KEYS
 from fdsrouter.core.estimator import estimate_duration_s
 from fdsrouter.core.fds_parser import (
@@ -116,7 +116,15 @@ class QueueManager:
     def _busy(self) -> bool:
         return self._running is not None or self._starting
 
-    async def enqueue(self, *, name: str, fds_file_path: Path, mpi_processes: int | None = None) -> dict[str, Any]:
+    async def enqueue(
+        self,
+        *,
+        name: str,
+        fds_file_path: Path,
+        mpi_processes: int | None = None,
+        actor: str | None = None,
+        project: str | None = None,
+    ) -> dict[str, Any]:
         cell_count = parse_mesh_cell_count_from_file(fds_file_path)
         mesh_count = parse_mesh_count_from_file(fds_file_path)
         sim_end_time_s = parse_sim_end_time_s_from_file(fds_file_path)
@@ -141,33 +149,40 @@ class QueueManager:
             sim_end_time_s=sim_end_time_s,
             mpi_process_count=resolved_processes,
             estimated_duration_s=estimate.seconds,
+            created_by=actor,
+            project=project,
         )
+        self.db.insert_audit_entry(actor, "job_create", job_id=job["id"], detail=name)
         await self._broadcast_queue()
         return job
 
-    async def archive_finished(self) -> int:
+    async def archive_finished(self, actor: str | None = None) -> int:
         """Move finished runs out of the history view and tell every client. Queued and
         running jobs are untouched, so this is safe to do while a simulation is going."""
         count = self.db.archive_finished_jobs()
         if count:
+            self.db.insert_audit_entry(actor, "job_archive", detail=f"{count} Laeufe")
             await self._broadcast_queue()
         return count
 
-    async def reorder(self, ordered_job_ids: list[str]) -> None:
+    async def reorder(self, ordered_job_ids: list[str], actor: str | None = None) -> None:
         self.db.reorder_queue(self.node_id, ordered_job_ids)
+        self.db.insert_audit_entry(actor, "queue_reorder")
         await self._broadcast_queue()
 
-    async def cancel(self, job_id: str) -> bool:
+    async def cancel(self, job_id: str, actor: str | None = None) -> bool:
         ok = self.db.cancel_queued_job(job_id)
         if ok:
+            self.db.insert_audit_entry(actor, "job_cancel", job_id=job_id)
             await self._broadcast_queue()
         return ok
 
-    async def stop_running_job(self, job_id: str) -> bool:
+    async def stop_running_job(self, job_id: str, actor: str | None = None) -> bool:
         """Permanently end the running job (SIGTERM/SIGKILL)."""
         if self._running is None or self._running_job_id != job_id:
             return False
         self._stop_requested = True
+        self.db.insert_audit_entry(actor, "job_stop", job_id=job_id)
         asyncio.create_task(job_runner.terminate(self._running.process))
         return True
 
@@ -302,9 +317,27 @@ class QueueManager:
         energy_kwh = energy_kwh_accumulator[0] or None
         cost = energy.energy_cost(energy_kwh, self._energy_settings()) if energy_kwh else None
         self.db.finish_job(job_id, status, exit_message=message, energy_kwh=energy_kwh, energy_cost_eur=cost)
+        # actor=None: a run reaching a terminal state on its own isn't a user action, unlike the
+        # explicit job_cancel/job_stop entries above.
+        self.db.insert_audit_entry(None, "job_finish", job_id=job_id, detail=status)
         self._running = None
         self._running_job_id = None
         await self._broadcast_queue()
+        # Fire-and-forget: a slow webhook or unreachable SMTP server must never delay the queue
+        # from advancing to the next job.
+        asyncio.create_task(self._notify(job_id, status))
+
+    async def _notify(self, job_id: str, status: str) -> None:
+        settings = notifications.NotificationSettings.from_settings_dict(
+            self.db.get_settings(notifications.SETTINGS_KEYS)
+        )
+        if status not in settings.events:
+            return
+        job = self.db.get_job(job_id)
+        if job is None:
+            return
+        await notifications.send_webhook(settings, job)
+        await asyncio.to_thread(notifications.send_email, settings, job)
 
     async def _broadcast_queue(self) -> None:
         await self.broadcast(

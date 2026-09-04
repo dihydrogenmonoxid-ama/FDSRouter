@@ -14,6 +14,10 @@
     <div id="node-status"><span class="dot"></span><span data-i18n="connecting">connecting…</span></div>
     <div class="spacer"></div>
     <div class="app-bar-actions">
+      <div id="user-badge" hidden>
+        <span id="user-name"></span>
+        <button id="logout-btn" class="secondary small" data-i18n="logout">Log out</button>
+      </div>
       <button id="new-job-btn" data-i18n="newJob">New Job</button>
       <button id="operations-btn" class="secondary" data-i18n="operations">Operations</button>
       <button id="settings-btn" class="secondary" data-i18n="settings">Settings</button>
@@ -46,8 +50,12 @@
             <button class="chip" data-filter="failed" data-i18n="filterFailed">Failed</button>
             <button class="chip" data-filter="archive" data-i18n="filterArchive">Archive</button>
           </div>
+          <select id="project-filter" data-i18n-title="projectFilterTitle" title="Filter by project">
+            <option value="" data-i18n="projectFilterAll">All projects</option>
+          </select>
           <div class="spacer"></div>
           <input id="runs-search" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search runs…" />
+          <button id="compare-btn" class="secondary small" hidden data-i18n="compareButton">Compare</button>
           <button id="archive-btn" class="secondary small" data-i18n="archiveButton">Archive</button>
         </div>
 
@@ -199,6 +207,10 @@
             <input id="mpi-processes" type="number" min="1" value="1" />
             <span id="mpi-hint" class="hint"></span>
           </div>
+          <div class="field">
+            <label for="new-job-project" data-i18n="projectLabel">Project</label>
+            <input id="new-job-project" type="text" data-i18n-placeholder="projectPlaceholder" placeholder="optional" />
+          </div>
         </section>
 
       </div>
@@ -256,10 +268,113 @@
           <span id="ha-test-result" class="hint"></span>
         </div>
 
+        <div class="sub-head" data-i18n="notifySettingsTitle">Notifications</div>
+        <div class="field">
+          <label for="notify-events" data-i18n="notifyEventsLabel">Notify on</label>
+          <select id="notify-events" multiple size="3">
+            <option value="done" data-i18n="notifyEventDone">Finished</option>
+            <option value="failed" data-i18n="notifyEventFailed">Failed</option>
+            <option value="cancelled" data-i18n="notifyEventCancelled">Stopped</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="notify-webhook-url" data-i18n="notifyWebhookLabel">Webhook URL</label>
+          <input id="notify-webhook-url" type="text" placeholder="https://example.com/hook" />
+        </div>
+        <div class="field">
+          <label for="notify-email-to" data-i18n="notifyEmailToLabel">Notification email</label>
+          <input id="notify-email-to" type="text" placeholder="ops@example.com" />
+        </div>
+        <div class="field">
+          <label for="notify-smtp-host" data-i18n="notifySmtpHostLabel">SMTP server</label>
+          <input id="notify-smtp-host" type="text" placeholder="smtp.example.com" />
+        </div>
+        <div class="field">
+          <label for="notify-smtp-port" data-i18n="notifySmtpPortLabel">SMTP port</label>
+          <input id="notify-smtp-port" type="number" min="1" placeholder="587" />
+        </div>
+        <div class="field">
+          <label for="notify-smtp-user" data-i18n="notifySmtpUserLabel">SMTP user</label>
+          <input id="notify-smtp-user" type="text" />
+        </div>
+        <div class="field">
+          <label for="notify-smtp-password" data-i18n="notifySmtpPasswordLabel">SMTP password</label>
+          <input id="notify-smtp-password" type="password" placeholder="•••" />
+        </div>
+        <div class="field">
+          <label for="notify-email-from" data-i18n="notifyEmailFromLabel">Sender address</label>
+          <input id="notify-email-from" type="text" placeholder="fdsrouter@example.com" />
+        </div>
+        <div class="field">
+          <label></label>
+          <button id="notify-test-btn" class="secondary small" data-i18n="notifyTestButton">Send test</button>
+          <span id="notify-test-result" class="hint"></span>
+        </div>
+
       </div>
       <div class="dialog-actions">
         <button id="settings-close" class="secondary" data-i18n="close">Close</button>
         <button id="settings-save" data-i18n="save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Only reachable without a session -- logging in at all requires this to work first.
+       Doubles as the first-run "create the first account" screen (bootstrap mode). -->
+  <div id="login-overlay" class="overlay" hidden>
+    <div class="dialog">
+      <div class="dialog-head"><h2 id="login-title" data-i18n="loginTitle">Log in</h2></div>
+      <div class="dialog-body">
+        <p id="login-intro" class="hint" data-i18n="loginIntro">Please log in to use FDSRouter.</p>
+        <div class="field">
+          <label for="login-username" data-i18n="usernameLabel">Username</label>
+          <input id="login-username" type="text" autocomplete="username" />
+        </div>
+        <div class="field" id="login-display-name-field" hidden>
+          <label for="login-display-name" data-i18n="displayNameLabel">Display name</label>
+          <input id="login-display-name" type="text" data-i18n-placeholder="displayNameOptional" placeholder="optional" />
+        </div>
+        <div class="field">
+          <label for="login-password" data-i18n="passwordLabel">Password</label>
+          <input id="login-password" type="password" autocomplete="current-password" />
+        </div>
+        <div id="login-error" class="hint error" hidden></div>
+      </div>
+      <div class="dialog-actions">
+        <button id="login-submit" data-i18n="loginSubmit">Log in</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Overlay a HRR curve of several finished runs and export the comparison (Stufe 4). -->
+  <div id="compare-overlay" class="overlay" hidden>
+    <div class="dialog wide">
+      <div class="dialog-head"><h2 data-i18n="compareTitle">Compare runs</h2></div>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="compare-threshold" data-i18n="compareThresholdLabel">HRR threshold (kW, optional)</label>
+          <input id="compare-threshold" type="number" min="0" />
+        </div>
+        <div id="compare-plot" class="plot-area"></div>
+        <table class="data-table" id="compare-kpi-table">
+          <thead>
+            <tr>
+              <th data-i18n="compareColName">Run</th>
+              <th data-i18n="compareColProject">Project</th>
+              <th class="n" data-i18n="compareColPeakHrr">Peak HRR</th>
+              <th class="n" id="compare-threshold-col" hidden data-i18n="compareColThreshold">Time to threshold</th>
+              <th class="n" data-i18n="compareColDuration">Duration</th>
+              <th class="n" data-i18n="compareColEnergy">Energy</th>
+              <th class="n" data-i18n="compareColCost">Cost</th>
+            </tr>
+          </thead>
+          <tbody id="compare-kpi-tbody"></tbody>
+        </table>
+      </div>
+      <div class="dialog-actions">
+        <button id="compare-close" class="secondary" data-i18n="close">Close</button>
+        <button id="compare-export-csv" class="secondary" data-i18n="compareExportCsv">Export CSV</button>
+        <button id="compare-print" data-i18n="comparePrint">Print report</button>
       </div>
     </div>
   </div>

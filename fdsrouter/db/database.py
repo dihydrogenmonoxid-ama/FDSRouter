@@ -43,8 +43,16 @@ class Database:
         never see a new column -- and dropping the table would throw away the job history.
         """
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(job)")}
-        if "archived_at" not in columns:
-            self.conn.execute("ALTER TABLE job ADD COLUMN archived_at TEXT")
+        for column, ddl in (
+            ("archived_at", "ALTER TABLE job ADD COLUMN archived_at TEXT"),
+            # Who queued the run, which project it belongs to, and the operator's own note --
+            # all optional, so a database from before accounts existed keeps working unchanged.
+            ("created_by", "ALTER TABLE job ADD COLUMN created_by TEXT"),
+            ("project", "ALTER TABLE job ADD COLUMN project TEXT"),
+            ("notes", "ALTER TABLE job ADD COLUMN notes TEXT"),
+        ):
+            if column not in columns:
+                self.conn.execute(ddl)
 
     # -- Node -----------------------------------------------------------------
 
@@ -86,6 +94,9 @@ class Database:
         estimated_duration_s: float | None,
         case_hash: str | None = None,
         priority: int = 0,
+        created_by: str | None = None,
+        project: str | None = None,
+        notes: str | None = None,
     ) -> dict[str, Any]:
         job_id = uuid.uuid4().hex
         with self._lock, self.conn:
@@ -96,15 +107,23 @@ class Database:
                 """
                 INSERT INTO job (
                     id, name, fds_file_path, case_hash, node_id, status, queue_position, priority,
-                    mesh_cell_count, sim_end_time_s, mpi_process_count, created_at, estimated_duration_s
-                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
+                    mesh_cell_count, sim_end_time_s, mpi_process_count, created_at, estimated_duration_s,
+                    created_by, project, notes
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id, name, fds_file_path, case_hash, node_id, next_pos, priority,
                     mesh_cell_count, sim_end_time_s, mpi_process_count, _now(), estimated_duration_s,
+                    created_by, project, notes,
                 ),
             )
         return self.get_job(job_id)  # type: ignore[return-value]
+
+    def update_job(self, job_id: str, project: str | None, notes: str | None) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE job SET project=?, notes=? WHERE id=?", (project, notes, job_id)
+            )
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -346,3 +365,78 @@ class Database:
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (key, value),
                 )
+
+    # -- Users, sessions, audit log --------------------------------------------------------
+
+    def count_users(self) -> int:
+        with self._lock:
+            return self.conn.execute("SELECT COUNT(*) FROM user").fetchone()[0]
+
+    def create_user(self, *, username: str, display_name: str, password_hash: str | None) -> dict[str, Any]:
+        user_id = uuid.uuid4().hex
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO user (id, username, display_name, password_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, username, display_name, password_hash, _now()),
+            )
+        return self.get_user(user_id)  # type: ignore[return-value]
+
+    def get_user(self, user_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM user WHERE id=?", (user_id,)).fetchone()
+        return _row_to_dict(row)
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM user WHERE username=?", (username,)).fetchone()
+        return _row_to_dict(row)
+
+    def touch_last_login(self, user_id: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute("UPDATE user SET last_login_at=? WHERE id=?", (_now(), user_id))
+
+    def create_session_row(self, token_hash: str, user_id: str, expires_at: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO session (token_hash, user_id, created_at, expires_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (token_hash, user_id, _now(), expires_at, _now()),
+            )
+
+    def get_session(self, token_hash: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM session WHERE token_hash=?", (token_hash,)).fetchone()
+        return _row_to_dict(row)
+
+    def touch_session(self, token_hash: str, expires_at: str, last_seen_at: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE session SET expires_at=?, last_seen_at=? WHERE token_hash=?",
+                (expires_at, last_seen_at, token_hash),
+            )
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute("DELETE FROM session WHERE token_hash=?", (token_hash,))
+
+    def insert_audit_entry(
+        self, username: str | None, action: str, job_id: str | None = None, detail: str | None = None
+    ) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO audit_entry (timestamp, username, action, job_id, detail) VALUES (?, ?, ?, ?, ?)",
+                (_now(), username, action, job_id, detail),
+            )
+
+    def get_audit_entries(self, job_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            if job_id is not None:
+                rows = self.conn.execute(
+                    "SELECT * FROM audit_entry WHERE job_id=? ORDER BY id DESC LIMIT ?", (job_id, limit)
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM audit_entry ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+        return [dict(r) for r in rows]

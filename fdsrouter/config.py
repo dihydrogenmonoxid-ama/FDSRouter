@@ -27,6 +27,13 @@ class Config:
     temperature_enabled: bool = True
     upload_dir: Path = field(default_factory=lambda: Path("./data/cases"))
     max_upload_mb: int = 512
+    # Off by default. When set to a header name (e.g. "X-Remote-User"), FDSRouter trusts that
+    # header's value as an already-authenticated username instead of requiring a password login
+    # -- only safe behind a reverse proxy that authenticates the request itself and strips any
+    # such header a client might try to forge. Deliberately install-time-only: this is a
+    # security decision the installer must make consciously, so it is never exposed in the
+    # runtime Settings UI (see core/auth.py, api/app.py).
+    trusted_proxy_header: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -61,6 +68,7 @@ def _write_default_config(path: Path) -> dict:
         "temperature_enabled": True,
         "upload_dir": "./data/cases",
         "max_upload_mb": 512,
+        "trusted_proxy_header": None,
     }
     with path.open("w", encoding="utf-8") as f:
         f.write(
@@ -93,6 +101,7 @@ def load_config(project_dir: Path) -> Config:
     cfg.temperature_enabled = bool(raw.get("temperature_enabled", True))
     cfg.upload_dir = Path(raw.get("upload_dir", "./data/cases"))
     cfg.max_upload_mb = int(raw.get("max_upload_mb", 512))
+    cfg.trusted_proxy_header = raw.get("trusted_proxy_header") or None
 
     cfg.resolved_data_dir.mkdir(parents=True, exist_ok=True)
     return cfg

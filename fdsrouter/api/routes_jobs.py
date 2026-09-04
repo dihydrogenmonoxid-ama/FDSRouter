@@ -24,10 +24,21 @@ class JobCreate(BaseModel):
     fds_file_path: str
     name: str | None = None
     mpi_processes: int | None = None
+    project: str | None = None
 
 
 class ReorderRequest(BaseModel):
     ordered_job_ids: list[str]
+
+
+class JobUpdate(BaseModel):
+    project: str | None = None
+    notes: str | None = None
+
+
+def _actor(request: Request) -> str | None:
+    user = getattr(request.state, "user", None)
+    return user["username"] if user else None
 
 
 def _require_fds_file(path_str: str) -> Path:
@@ -69,7 +80,7 @@ def list_archived_jobs(request: Request) -> list[dict]:
 @router.post("/archive")
 async def archive_jobs(request: Request) -> dict:
     """Archive every finished run at once -- the "Archivieren" action in the history panel."""
-    return {"archived": await request.app.state.queue_manager.archive_finished()}
+    return {"archived": await request.app.state.queue_manager.archive_finished(actor=_actor(request))}
 
 
 @router.post("")
@@ -79,7 +90,13 @@ async def create_job(payload: JobCreate, request: Request) -> dict:
 
     queue_manager = request.app.state.queue_manager
     try:
-        job = await queue_manager.enqueue(name=name, fds_file_path=fds_file, mpi_processes=payload.mpi_processes)
+        job = await queue_manager.enqueue(
+            name=name,
+            fds_file_path=fds_file,
+            mpi_processes=payload.mpi_processes,
+            actor=_actor(request),
+            project=payload.project,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return job
@@ -88,7 +105,7 @@ async def create_job(payload: JobCreate, request: Request) -> dict:
 @router.patch("/reorder")
 async def reorder_jobs(payload: ReorderRequest, request: Request) -> dict:
     try:
-        await request.app.state.queue_manager.reorder(payload.ordered_job_ids)
+        await request.app.state.queue_manager.reorder(payload.ordered_job_ids, actor=_actor(request))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
@@ -104,7 +121,7 @@ async def start_job(job_id: str, request: Request) -> dict:
 
 @router.post("/{job_id}/cancel")
 async def cancel_job(job_id: str, request: Request) -> dict:
-    ok = await request.app.state.queue_manager.cancel(job_id)
+    ok = await request.app.state.queue_manager.cancel(job_id, actor=_actor(request))
     if not ok:
         raise HTTPException(status_code=409, detail="Job ist nicht wartend oder pausiert (laeuft bereits oder abgeschlossen)")
     return {"ok": True}
@@ -112,7 +129,7 @@ async def cancel_job(job_id: str, request: Request) -> dict:
 
 @router.post("/{job_id}/stop")
 async def stop_job(job_id: str, request: Request) -> dict:
-    ok = await request.app.state.queue_manager.stop_running_job(job_id)
+    ok = await request.app.state.queue_manager.stop_running_job(job_id, actor=_actor(request))
     if not ok:
         raise HTTPException(status_code=409, detail="Job laeuft aktuell nicht")
     return {"ok": True}
@@ -121,6 +138,23 @@ async def stop_job(job_id: str, request: Request) -> dict:
 @router.get("/{job_id}")
 def get_job(job_id: str, request: Request) -> dict:
     return _require_job(job_id, request)
+
+
+@router.patch("/{job_id}")
+def update_job(job_id: str, payload: JobUpdate, request: Request) -> dict:
+    job = _require_job(job_id, request)
+    db = request.app.state.db
+    project = payload.project if payload.project is not None else job.get("project")
+    notes = payload.notes if payload.notes is not None else job.get("notes")
+    db.update_job(job_id, project=project, notes=notes)
+    db.insert_audit_entry(_actor(request), "job_edit", job_id=job_id)
+    return _require_job(job_id, request)
+
+
+@router.get("/{job_id}/audit")
+def get_job_audit(job_id: str, request: Request) -> dict:
+    _require_job(job_id, request)
+    return {"entries": request.app.state.db.get_audit_entries(job_id=job_id)}
 
 
 def _devc_path_for_job(job: dict) -> Path | None:

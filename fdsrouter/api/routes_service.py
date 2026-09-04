@@ -28,6 +28,11 @@ def _guard_running_job(request: Request, payload: ServiceAction | None) -> None:
         raise HTTPException(status_code=409, detail="running_job")
 
 
+def _actor(request: Request) -> str | None:
+    user = getattr(request.state, "user", None)
+    return user["username"] if user else None
+
+
 @router.get("")
 def get_service_status() -> dict:
     return service_control.status()
@@ -40,6 +45,7 @@ def post_restart(request: Request, payload: ServiceAction | None = None) -> dict
         service_control.restart()
     except service_control.ServiceControlError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    request.app.state.db.insert_audit_entry(_actor(request), "service_restart")
     return {"ok": True}
 
 
@@ -50,6 +56,7 @@ def post_stop(request: Request, payload: ServiceAction | None = None) -> dict:
         service_control.stop()
     except service_control.ServiceControlError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    request.app.state.db.insert_audit_entry(_actor(request), "service_stop")
     return {"ok": True}
 
 
@@ -57,6 +64,8 @@ def post_stop(request: Request, payload: ServiceAction | None = None) -> dict:
 def post_update(request: Request, payload: ServiceAction | None = None) -> dict:
     _guard_running_job(request, payload)
     try:
-        return service_control.update()
+        result = service_control.update()
     except service_control.ServiceControlError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    request.app.state.db.insert_audit_entry(_actor(request), "service_update")
+    return result

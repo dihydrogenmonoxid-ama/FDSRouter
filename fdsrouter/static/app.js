@@ -35,6 +35,16 @@ const state = {
   filter: "all",
   search: "",
   archivedJobs: [],
+  projectFilter: "",
+  currentUser: null,
+  bootedApp: false,
+  compareSelection: new Set(),
+  compareJobs: [],
+  deepLinkJobId: (() => {
+    const m = location.pathname.match(/^\/job\/([^/]+)$/);
+    return m ? decodeURIComponent(m[1]) : null;
+  })(),
+  deepLinkHandled: false,
 };
 
 const modalState = {
@@ -106,6 +116,7 @@ function token(name, fallback) {
 async function apiGet(path) {
   const res = await fetch(path);
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized();
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail.detail || `${path}: ${res.status}`);
   }
@@ -119,10 +130,114 @@ async function apiSend(path, method, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized();
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail.detail || `${path}: ${res.status}`);
   }
   return res.json();
+}
+
+// ---------- Auth ----------
+
+function handleUnauthorized() {
+  showLoginOverlay(false);
+}
+
+function showLoginOverlay(bootstrap) {
+  el("login-overlay").hidden = false;
+  el("login-title").textContent = bootstrap ? t("loginBootstrapTitle") : t("loginTitle");
+  el("login-intro").textContent = bootstrap ? t("loginBootstrapIntro") : t("loginIntro");
+  el("login-submit").textContent = bootstrap ? t("loginBootstrapSubmit") : t("loginSubmit");
+  el("login-display-name-field").hidden = !bootstrap;
+  el("login-error").hidden = true;
+  el("login-overlay").dataset.bootstrap = bootstrap ? "1" : "";
+}
+
+function hideLoginOverlay() {
+  el("login-overlay").hidden = true;
+  el("login-username").value = "";
+  el("login-password").value = "";
+  el("login-display-name").value = "";
+}
+
+function updateUserBadge(user) {
+  state.currentUser = user;
+  const badge = el("user-badge");
+  if (!user) {
+    badge.hidden = true;
+    return;
+  }
+  badge.hidden = false;
+  setText("user-name", user.display_name || user.username);
+}
+
+async function submitLogin() {
+  const bootstrap = el("login-overlay").dataset.bootstrap === "1";
+  const username = el("login-username").value.trim();
+  const password = el("login-password").value;
+  const errorEl = el("login-error");
+  errorEl.hidden = true;
+  if (!username || !password) {
+    errorEl.textContent = t("loginMissingFields");
+    errorEl.hidden = false;
+    return;
+  }
+  try {
+    if (bootstrap) {
+      await apiSend("/api/auth/register", "POST", {
+        username,
+        password,
+        display_name: el("login-display-name").value.trim() || undefined,
+      });
+    } else {
+      await apiSend("/api/auth/login", "POST", { username, password });
+    }
+    hideLoginOverlay();
+    const session = await apiGet("/api/auth/session");
+    onAuthenticated(session.user);
+  } catch (e) {
+    errorEl.textContent = e.message || t("loginFailed");
+    errorEl.hidden = false;
+  }
+}
+
+async function logout() {
+  try {
+    await apiSend("/api/auth/logout", "POST");
+  } catch (e) {
+    // even if the request fails, forget the local user state and show the login screen again
+  }
+  updateUserBadge(null);
+  showLoginOverlay(false);
+}
+
+/** Boots the rest of the app once we know a request will not be met with a 401 -- either an
+ *  account is logged in, or no account exists yet (bootstrap mode is fully open). Only runs the
+ *  actual startup sequence once: called again after a post-401 re-login, when jobs/websocket are
+ *  already running. */
+function onAuthenticated(user) {
+  hideLoginOverlay();
+  updateUserBadge(user);
+  if (state.bootedApp) return;
+  state.bootedApp = true;
+  refreshNodeStatus();
+  refreshJobs();
+  apiGet("/api/queue/state").then((s) => applyAutoAdvanceState(s.auto_advance)).catch(() => {});
+  connectWebSocket();
+}
+
+async function boot() {
+  let session;
+  try {
+    session = await apiGet("/api/auth/session");
+  } catch (e) {
+    return; // backend unreachable -- nothing to boot yet; a retry happens on the next reload
+  }
+  if (session.bootstrap || session.authenticated) {
+    onAuthenticated(session.user);
+  } else {
+    showLoginOverlay(false);
+  }
 }
 
 // ---------- Node status ----------
@@ -178,6 +293,7 @@ function openNewJobModal() {
   el("upload-btn").disabled = true;
   el("upload-status").textContent = t("uploadHint");
   el("upload-folder-name").value = "";
+  el("new-job-project").value = "";
   renderCaseFindings([]);
   updateWorkingDirStep();
   el("new-job-overlay").hidden = false;
@@ -397,6 +513,7 @@ async function submitNewJob() {
     await apiSend("/api/jobs", "POST", {
       fds_file_path: modalState.selectedFilePath,
       mpi_processes: mpiProcesses,
+      project: el("new-job-project").value.trim() || undefined,
     });
     closeNewJobModal();
   } catch (e) {
@@ -419,9 +536,19 @@ async function openSettingsModal() {
     el("ha-entity-id").value = s.ha_entity_id || "";
     el("electricity-price").value = s.electricity_price_eur_per_kwh || "";
     el("solar-powered").checked = s.solar_powered === "true";
+    el("notify-webhook-url").value = s.notify_webhook_url || "";
+    el("notify-email-to").value = s.notify_email_to || "";
+    el("notify-smtp-host").value = s.notify_email_smtp_host || "";
+    el("notify-smtp-port").value = s.notify_email_smtp_port || "";
+    el("notify-smtp-user").value = s.notify_email_smtp_user || "";
+    el("notify-smtp-password").value = s.notify_email_smtp_password || "";
+    el("notify-email-from").value = s.notify_email_from || "";
+    const events = (s.notify_events || "done,failed,cancelled").split(",").map((e) => e.trim());
+    Array.from(el("notify-events").options).forEach((opt) => (opt.selected = events.includes(opt.value)));
   } catch (e) {
     // settings are optional -- an unreachable backend just leaves the form empty
   }
+  el("notify-test-result").textContent = "";
   el("settings-overlay").hidden = false;
 }
 
@@ -459,6 +586,14 @@ async function saveSettings() {
       ha_entity_id: el("ha-entity-id").value || null,
       electricity_price_eur_per_kwh: el("electricity-price").value ? parseFloat(el("electricity-price").value) : null,
       solar_powered: el("solar-powered").checked,
+      notify_webhook_url: el("notify-webhook-url").value || null,
+      notify_email_to: el("notify-email-to").value || null,
+      notify_email_smtp_host: el("notify-smtp-host").value || null,
+      notify_email_smtp_port: el("notify-smtp-port").value ? parseInt(el("notify-smtp-port").value, 10) : null,
+      notify_email_smtp_user: el("notify-smtp-user").value || null,
+      notify_email_smtp_password: el("notify-smtp-password").value || null,
+      notify_email_from: el("notify-email-from").value || null,
+      notify_events: Array.from(el("notify-events").selectedOptions).map((o) => o.value).join(",") || null,
     });
     closeSettingsModal();
   } catch (e) {
@@ -614,6 +749,26 @@ async function testEnergyConnection() {
     resultEl.textContent = result.ok ? t("haTestSuccess", { watts: result.watts.toFixed(0) }) : t("haTestFailure");
   } catch (e) {
     resultEl.textContent = t("haTestFailure");
+  }
+}
+
+/** Sends the test unconditionally with whatever is on disk -- unsaved changes must be saved
+ *  first, since the test reads settings from the backend, not from the open form. */
+async function testNotification() {
+  const resultEl = el("notify-test-result");
+  resultEl.textContent = "…";
+  try {
+    const result = await apiSend("/api/settings/test-notification", "POST");
+    if (!result.webhook_configured && !result.email_configured) {
+      resultEl.textContent = t("notifyTestUnconfigured");
+    } else {
+      const parts = [];
+      if (result.webhook_configured) parts.push(result.webhook_ok ? t("notifyTestWebhookOk") : t("notifyTestWebhookFailed"));
+      if (result.email_configured) parts.push(result.email_ok ? t("notifyTestEmailOk") : t("notifyTestEmailFailed"));
+      resultEl.textContent = parts.join(" · ");
+    }
+  } catch (e) {
+    resultEl.textContent = t("notifyTestFailed", { error: e.message });
   }
 }
 
@@ -970,10 +1125,39 @@ function visibleJobs() {
   return source.filter(
     (job) =>
       byStatus(job) &&
+      (!state.projectFilter || job.project === state.projectFilter) &&
       (!needle ||
         job.name.toLowerCase().includes(needle) ||
         (job.fds_file_path || "").toLowerCase().includes(needle))
   );
+}
+
+/** Rebuild the project dropdown from whatever projects are currently known, keeping the
+ *  selection if it still exists -- same "diff before touching the DOM" care as
+ *  syncPlotSignalOptions, so an open dropdown isn't rebuilt out from under a click. */
+function syncProjectFilterOptions() {
+  const select = el("project-filter");
+  const projects = Array.from(
+    new Set([...state.jobs, ...state.archivedJobs].map((j) => j.project).filter(Boolean))
+  ).sort();
+  const wanted = state.projectFilter;
+  const values = ["", ...projects];
+  const unchanged =
+    select.options.length === values.length &&
+    values.every((value, i) => select.options[i].value === value);
+  if (unchanged) {
+    select.value = values.includes(wanted) ? wanted : "";
+    return;
+  }
+  select.innerHTML = `<option value="">${esc(t("projectFilterAll"))}</option>`;
+  for (const project of projects) {
+    const option = document.createElement("option");
+    option.value = project;
+    option.textContent = project;
+    select.appendChild(option);
+  }
+  if (!values.includes(wanted)) state.projectFilter = "";
+  select.value = state.projectFilter;
 }
 
 /** Reordering rewrites the whole queue order, so it is only safe while every waiting run is
@@ -983,6 +1167,7 @@ function reorderAllowed() {
 }
 
 function renderJobs() {
+  syncProjectFilterOptions();
   const running = state.jobs.find((j) => j.status === "running");
   const previousRunning = state.runningJobId;
   state.runningJobId = running ? running.id : null;
@@ -1038,6 +1223,15 @@ function renderJobs() {
   archiveBtn.hidden = state.filter === "archive";
   archiveBtn.disabled = archivable.length === 0;
 
+  // A selected job can vanish from view for reasons other than its own checkbox (archived,
+  // filtered out, deleted from the server) -- re-derive the button from the surviving selection
+  // on every render rather than only reacting to a checkbox click.
+  const stillPresent = new Set([...state.jobs, ...state.archivedJobs].map((j) => j.id));
+  for (const id of state.compareSelection) {
+    if (!stillPresent.has(id)) state.compareSelection.delete(id);
+  }
+  updateCompareButton();
+
   updateDashboardVisibility();
 }
 
@@ -1074,6 +1268,7 @@ function renderEmptyState() {
 function renderRunningCard(job) {
   const li = document.createElement("li");
   li.className = "job running";
+  li.dataset.jobId = job.id;
   const endTime = job.sim_end_time_s != null ? `${job.sim_end_time_s.toFixed(0)} s` : t("unknownValue");
   li.innerHTML = `
     <div class="job-head">
@@ -1182,13 +1377,18 @@ function renderQueuedCard(job, isNext, position) {
 function renderHistoryCard(job) {
   const li = document.createElement("li");
   li.className = `job ${job.status}`;
+  li.dataset.jobId = job.id;
   const isExpanded = state.expandedHistoryIds.has(job.id);
+  const canCompare = ["done", "failed"].includes(job.status);
   li.innerHTML = `
     <div class="job-head">
+      ${canCompare ? `<input type="checkbox" class="compare-check" title="${esc(t("compareSelect"))}" />` : ""}
       <span class="job-name">${esc(job.name)}</span>
       ${renderStatus(job.status)}
     </div>
     <div class="job-meta">${esc(t("jobMetaDone", { duration: fmtDuration(job.actual_duration_s) }))}${
+      job.project ? " · " + esc(job.project) : ""
+    }${
       job.archived_at
         ? " · " + esc(t("archivedMeta", { date: new Date(job.archived_at).toLocaleDateString() }))
         : ""
@@ -1204,6 +1404,17 @@ function renderHistoryCard(job) {
       <button class="secondary small details-toggle">${isExpanded ? t("hideDetails") : t("showDetails")}</button>
     </div>
     <div class="job-details" ${isExpanded ? "" : "hidden"}></div>`;
+
+  if (canCompare) {
+    const checkbox = li.querySelector(".compare-check");
+    checkbox.checked = state.compareSelection.has(job.id);
+    checkbox.onclick = (ev) => ev.stopPropagation();
+    checkbox.onchange = () => {
+      if (checkbox.checked) state.compareSelection.add(job.id);
+      else state.compareSelection.delete(job.id);
+      updateCompareButton();
+    };
+  }
 
   li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
   li.querySelector(".job-actions").appendChild(renderResultsButton(job.id));
@@ -1271,6 +1482,7 @@ async function loadHistoryDetails(job, container) {
       [t("detailFinalSimTime"), last?.simulation_time_s != null ? `${last.simulation_time_s.toFixed(2)} s` : t("unknownValue")],
       [t("detailPeakHrr"), outMetrics.length ? `${peakHrr.toFixed(1)} kW` : t("unknownValue")],
       [t("detailWarnings"), last?.warnings_count ?? 0],
+      [t("detailCreatedBy"), job.created_by || t("unknownValue")],
       [t("detailStarted"), job.started_at ? new Date(job.started_at).toLocaleString() : "–"],
       [t("detailFinished"), job.finished_at ? new Date(job.finished_at).toLocaleString() : "–"],
     ];
@@ -1280,12 +1492,67 @@ async function loadHistoryDetails(job, container) {
     }
     if (job.exit_message) rows.push([t("detailExitMessage"), job.exit_message]);
 
-    container.innerHTML = `<dl class="spec">${rows
-      .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`)
-      .join("")}</dl>`;
+    let audit = [];
+    try {
+      audit = (await apiGet(`/api/jobs/${job.id}/audit`)).entries || [];
+    } catch (e) {
+      // audit history is a nice-to-have -- an unavailable log must not hide the rest of the details
+    }
+
+    container.innerHTML = `
+      <dl class="spec">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+      <div class="sub-head">${esc(t("projectNotesTitle"))}</div>
+      <div class="field">
+        <label for="job-project-${job.id}">${esc(t("projectLabel"))}</label>
+        <input id="job-project-${job.id}" type="text" value="${esc(job.project || "")}" />
+      </div>
+      <div class="field">
+        <label for="job-notes-${job.id}">${esc(t("notesLabel"))}</label>
+        <textarea id="job-notes-${job.id}" rows="3">${esc(job.notes || "")}</textarea>
+      </div>
+      <div class="field">
+        <label></label>
+        <button class="secondary small" id="job-save-meta-${job.id}">${esc(t("save"))}</button>
+        <span class="hint" id="job-save-meta-result-${job.id}"></span>
+      </div>
+      ${audit.length
+        ? `<div class="sub-head">${esc(t("auditTitle"))}</div>
+           <ul class="audit-list">${audit
+             .map(
+               (e) =>
+                 `<li><span class="mono">${esc(new Date(e.timestamp).toLocaleString())}</span> · ${esc(
+                   e.username || t("auditSystemActor")
+                 )} · ${esc(auditActionLabel(e.action))}${e.detail ? ` (${esc(e.detail)})` : ""}</li>`
+             )
+             .join("")}</ul>`
+        : ""}`;
+
+    container.querySelector(`#job-save-meta-${job.id}`).onclick = async () => {
+      const resultEl = container.querySelector(`#job-save-meta-result-${job.id}`);
+      try {
+        const updated = await apiSend(`/api/jobs/${job.id}`, "PATCH", {
+          project: container.querySelector(`#job-project-${job.id}`).value.trim() || null,
+          notes: container.querySelector(`#job-notes-${job.id}`).value.trim() || null,
+        });
+        Object.assign(job, updated);
+        resultEl.textContent = t("saveDone");
+        const metaEl = container.closest("li.job")?.querySelector(".job-meta");
+        if (metaEl && job.project) {
+          metaEl.textContent = t("jobMetaDone", { duration: fmtDuration(job.actual_duration_s) }) + " · " + job.project;
+        }
+      } catch (e) {
+        resultEl.textContent = t("saveFailed", { error: e.message });
+      }
+    };
   } catch (e) {
     container.innerHTML = `<div class="note">${t("detailUnavailable")}</div>`;
   }
+}
+
+function auditActionLabel(action) {
+  const key = "audit_" + action;
+  const label = t(key);
+  return label === key ? action : label;
 }
 
 // ---------- Drag & drop reordering (queued jobs only) ----------
@@ -1837,6 +2104,176 @@ function renderExternalJobs(jobs) {
     .join("");
 }
 
+// ---------- Compare runs (Stufe 4) ----------
+
+let comparePlot = null;
+
+function findJobById(id) {
+  return state.jobs.find((j) => j.id === id) || state.archivedJobs.find((j) => j.id === id);
+}
+
+function updateCompareButton() {
+  const btn = el("compare-btn");
+  const count = state.compareSelection.size;
+  btn.hidden = count === 0;
+  btn.disabled = count < 2;
+  btn.textContent = count > 0 ? `${t("compareButton")} (${count})` : t("compareButton");
+}
+
+const COMPARE_COLORS = ["--accent", "--data", "--ok", "--warn"];
+
+async function openCompareOverlay() {
+  const ids = Array.from(state.compareSelection);
+  const jobs = ids.map(findJobById).filter(Boolean);
+  const metricsById = new Map();
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        let metrics = state.jobMetricsCache.get(id);
+        if (!metrics) {
+          metrics = await apiGet(`/api/jobs/${id}/metrics`);
+          state.jobMetricsCache.set(id, metrics);
+        }
+        metricsById.set(id, metrics.out_file_metrics || []);
+      } catch (e) {
+        metricsById.set(id, []);
+      }
+    })
+  );
+  state.compareJobs = jobs.map((job) => ({ job, series: metricsById.get(job.id) || [] }));
+  el("compare-threshold").value = "";
+  el("compare-overlay").hidden = false;
+  renderComparePlot();
+  renderCompareKpiTable();
+}
+
+function closeCompareOverlay() {
+  el("compare-overlay").hidden = true;
+  if (comparePlot) {
+    comparePlot.destroy();
+    comparePlot = null;
+  }
+}
+
+function comparePlotOptions(width) {
+  const line = token("--line", "#232a37");
+  const faint = token("--text-faint", "#7b8494");
+  const font = "10px " + token("--font-mono", "monospace");
+  const axis = { stroke: faint, font, grid: { stroke: line, width: 1, dash: [1, 3] }, ticks: { stroke: line, width: 1, size: 3 } };
+  const series = [{ label: t("simTimeAxisLabel") }];
+  state.compareJobs.forEach(({ job }, i) => {
+    const color = token(COMPARE_COLORS[i % COMPARE_COLORS.length], "#4c9aff");
+    series.push({ label: job.name, stroke: color, width: 1.6, points: { show: false } });
+  });
+  return {
+    width,
+    height: 240,
+    padding: [10, 12, 0, 0],
+    legend: { show: true, live: false },
+    cursor: { drag: { x: false, y: false } },
+    scales: { x: { time: false } },
+    axes: [{ ...axis, size: 26 }, { ...axis, size: 48 }],
+    series,
+  };
+}
+
+/** uPlot needs one shared x-axis for every series -- build the union of every run's sample
+ *  times (rounded to damp float jitter between independently-sampled runs) and align each
+ *  run's HRR values onto it, leaving a gap (null) wherever that run has no sample at that time. */
+function comparePlotData() {
+  const xSet = new Set();
+  for (const { series } of state.compareJobs) {
+    for (const sample of series) {
+      if (sample.simulation_time_s != null) xSet.add(Math.round(sample.simulation_time_s * 10) / 10);
+    }
+  }
+  const xs = Array.from(xSet).sort((a, b) => a - b);
+  const columns = [xs];
+  for (const { series } of state.compareJobs) {
+    const byX = new Map(series.map((s) => [Math.round((s.simulation_time_s ?? -1) * 10) / 10, s.total_hrr_kw]));
+    columns.push(xs.map((x) => (byX.has(x) ? byX.get(x) : null)));
+  }
+  return columns;
+}
+
+function renderComparePlot() {
+  const host = el("compare-plot");
+  host.innerHTML = "";
+  if (comparePlot) {
+    comparePlot.destroy();
+    comparePlot = null;
+  }
+  const width = Math.max(240, host.clientWidth || 600);
+  comparePlot = new uPlot(comparePlotOptions(width), comparePlotData(), host);
+}
+
+function peakHrr(series) {
+  return series.reduce((max, s) => (s.total_hrr_kw != null && s.total_hrr_kw > max ? s.total_hrr_kw : max), 0);
+}
+
+/** First sample time at which a run's HRR reaches the given threshold, or null if it never does
+ *  (or the run has no HRR data at all). */
+function timeToThreshold(series, thresholdKw) {
+  const hit = series.find((s) => s.total_hrr_kw != null && s.total_hrr_kw >= thresholdKw);
+  return hit ? hit.simulation_time_s : null;
+}
+
+function renderCompareKpiTable() {
+  const thresholdRaw = el("compare-threshold").value;
+  const threshold = thresholdRaw ? parseFloat(thresholdRaw) : null;
+  el("compare-threshold-col").hidden = threshold == null;
+  document.querySelectorAll("#compare-kpi-table .compare-threshold-cell").forEach((c) => c.remove());
+
+  const tbody = el("compare-kpi-tbody");
+  tbody.innerHTML = state.compareJobs
+    .map(({ job, series }) => {
+      const thresholdCell =
+        threshold != null
+          ? `<td class="n compare-threshold-cell">${
+              timeToThreshold(series, threshold) != null ? `${timeToThreshold(series, threshold).toFixed(1)} s` : "–"
+            }</td>`
+          : "";
+      return `<tr>
+        <td>${esc(job.name)}</td>
+        <td>${esc(job.project || "–")}</td>
+        <td class="n">${series.length ? `${peakHrr(series).toFixed(1)} kW` : "–"}</td>
+        ${threshold != null ? thresholdCell : ""}
+        <td class="n">${fmtDuration(job.actual_duration_s)}</td>
+        <td class="n">${job.energy_kwh != null ? `${job.energy_kwh.toFixed(2)} kWh` : "–"}</td>
+        <td class="n">${job.energy_cost_eur != null ? `${job.energy_cost_eur.toFixed(2)} €` : "–"}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function exportCompareCsv() {
+  const threshold = el("compare-threshold").value ? parseFloat(el("compare-threshold").value) : null;
+  const header = ["name", "project", "peak_hrr_kw", "duration_s", "energy_kwh", "energy_cost_eur"];
+  if (threshold != null) header.push("time_to_threshold_s");
+  const lines = [header.join(",")];
+  for (const { job, series } of state.compareJobs) {
+    const row = [
+      job.name,
+      job.project || "",
+      series.length ? peakHrr(series).toFixed(1) : "",
+      job.actual_duration_s ?? "",
+      job.energy_kwh ?? "",
+      job.energy_cost_eur ?? "",
+    ];
+    if (threshold != null) row.push(timeToThreshold(series, threshold) ?? "");
+    lines.push(row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "fdsrouter_vergleich.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 // ---------- Energy / cost ----------
 
 function handleEnergyUpdate(msg) {
@@ -1861,6 +2298,7 @@ async function refreshJobs() {
   if (state.runningJobId && state.runningJobId !== previousRunning) {
     loadJobHistoryForChart(state.runningJobId);
   }
+  handleDeepLink();
 }
 
 function connectWebSocket() {
@@ -1938,6 +2376,7 @@ el("service-update-btn").addEventListener("click", () => serviceAction("update")
 el("service-restart-btn").addEventListener("click", () => serviceAction("restart"));
 el("service-stop-btn").addEventListener("click", () => serviceAction("stop"));
 el("ha-test-btn").addEventListener("click", testEnergyConnection);
+el("notify-test-btn").addEventListener("click", testNotification);
 
 el("console-close").addEventListener("click", closeConsoleLog);
 el("console-copy").addEventListener("click", copyConsoleLog);
@@ -1958,6 +2397,76 @@ el("runs-search").addEventListener("input", (ev) => {
   renderJobs();
 });
 
+el("project-filter").addEventListener("change", (ev) => {
+  state.projectFilter = ev.target.value;
+  renderJobs();
+});
+
+el("compare-btn").addEventListener("click", openCompareOverlay);
+el("compare-close").addEventListener("click", closeCompareOverlay);
+el("compare-overlay").addEventListener("click", (ev) => {
+  if (ev.target === el("compare-overlay")) closeCompareOverlay();
+});
+el("compare-threshold").addEventListener("input", renderCompareKpiTable);
+el("compare-export-csv").addEventListener("click", exportCompareCsv);
+el("compare-print").addEventListener("click", () => window.print());
+
+// ---------- Deep links (/job/<id>) ----------
+
+el("runs-list").addEventListener("click", (ev) => {
+  const nameEl = ev.target.closest(".job-name");
+  if (!nameEl) return;
+  const li = nameEl.closest("li.job");
+  if (!li || !li.dataset.jobId) return;
+  if (location.pathname !== `/job/${li.dataset.jobId}`) {
+    history.pushState(null, "", `/job/${li.dataset.jobId}`);
+  }
+});
+
+window.addEventListener("popstate", () => {
+  const m = location.pathname.match(/^\/job\/([^/]+)$/);
+  state.deepLinkJobId = m ? decodeURIComponent(m[1]) : null;
+  state.deepLinkHandled = false;
+  handleDeepLink();
+});
+
+/** Scroll to and expand the job named in the URL, once the job list is loaded. Falls back to a
+ *  direct fetch for an archived job that isn't in the default (non-archived) list. */
+async function handleDeepLink() {
+  if (!state.deepLinkJobId || state.deepLinkHandled) return;
+  const id = state.deepLinkJobId;
+  let job = findJobById(id);
+  if (!job) {
+    try {
+      job = await apiGet(`/api/jobs/${id}`);
+    } catch (e) {
+      state.deepLinkHandled = true;
+      return;
+    }
+  }
+  if (["done", "failed", "cancelled"].includes(job.status)) {
+    state.expandedHistoryIds.add(id);
+    if (job.archived_at && state.filter !== "archive") {
+      state.filter = "archive";
+      document.querySelectorAll("#status-filter .chip").forEach((chip) => chip.classList.toggle("selected", chip.dataset.filter === "archive"));
+      await refreshArchivedJobs();
+    } else {
+      renderJobs();
+    }
+  }
+  state.deepLinkHandled = true;
+  requestAnimationFrame(() => {
+    const li = el("runs-list").querySelector(`li.job[data-job-id="${CSS.escape(id)}"]`);
+    if (li) li.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+el("login-submit").addEventListener("click", submitLogin);
+el("login-password").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") submitLogin();
+});
+el("logout-btn").addEventListener("click", logout);
+
 el("operations-btn").addEventListener("click", openOperationsModal);
 el("operations-close").addEventListener("click", closeOperationsModal);
 el("operations-overlay").addEventListener("click", (ev) => {
@@ -1966,10 +2475,7 @@ el("operations-overlay").addEventListener("click", (ev) => {
 
 setTheme(getTheme());
 applyStaticTranslations();
-refreshNodeStatus();
-refreshJobs();
-apiGet("/api/queue/state").then((s) => applyAutoAdvanceState(s.auto_advance)).catch(() => {});
-connectWebSocket();
+boot();
 function redrawCanvases() {
   drawSparkline("cpu-sparkline", state.cpuTotalHistory);
   drawCoreHeatmap();
