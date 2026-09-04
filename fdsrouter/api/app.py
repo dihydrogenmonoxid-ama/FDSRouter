@@ -15,6 +15,7 @@ from fdsrouter.api import (
     routes_jobs,
     routes_nodes,
     routes_queue,
+    routes_service,
     routes_settings,
     routes_upload,
 )
@@ -64,6 +65,9 @@ def create_app(config: Config) -> FastAPI:
         app.state.queue_manager = queue_manager
         app.state.system_state = system_state
 
+        # A restart of the service kills the FDS child process; close out the row it left
+        # behind before the dispatch loop starts looking at the queue.
+        queue_manager.recover_stale_running_job()
         queue_manager.start()
         system_task = asyncio.create_task(system_monitor.poll_loop(config, system_state, ws_manager.broadcast))
         external_task = asyncio.create_task(
@@ -81,6 +85,7 @@ def create_app(config: Config) -> FastAPI:
     app.include_router(routes_nodes.router)
     app.include_router(routes_browse.router)
     app.include_router(routes_queue.router)
+    app.include_router(routes_service.router)
     app.include_router(routes_settings.router)
     app.include_router(routes_upload.router)
 

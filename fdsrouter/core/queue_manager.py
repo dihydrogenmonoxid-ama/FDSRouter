@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import psutil
+
 from fdsrouter.config import Config
 from fdsrouter.core import energy, job_runner, out_parser
 from fdsrouter.core.energy import EnergySettings, SETTINGS_KEYS as ENERGY_SETTINGS_KEYS
@@ -31,6 +33,9 @@ from fdsrouter.db.database import Database
 logger = logging.getLogger(__name__)
 
 DISPATCH_POLL_INTERVAL_S = 1.0
+
+# Shown in the history for a run that a service restart cut short (UI texts are German).
+STALE_RUNNING_MESSAGE = "Durch einen Neustart des Dienstes beendet."
 LOG_TAIL_LINES = 200  # kept in memory per run, for a short excerpt in a failure message
 LOG_DRAIN_TIMEOUT_S = 5.0  # grace period to flush the last stdout lines after process exit
 ENERGY_POLL_INTERVAL_S = 10.0  # coarser than the 2s job poll -- energy doesn't need that resolution
@@ -61,6 +66,23 @@ class QueueManager:
 
     def start(self) -> None:
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+
+    def recover_stale_running_job(self) -> None:
+        """Close out a job left in status='running' by a restart of the service.
+
+        FDS runs as a child of the service, so stopping or restarting it takes the simulation
+        down while the row stays 'running' and blocks the history and the queue view. If the
+        recorded process is really gone, the run is recorded as failed; if it somehow survived,
+        the row is left alone and stays truthful.
+        """
+        job = self.db.get_running_job(self.node_id)
+        if job is None:
+            return
+        pid = job.get("pid")
+        if pid and psutil.pid_exists(int(pid)):
+            return
+        logger.info("job %s was still marked running at startup -- recording it as failed", job["id"])
+        self.db.finish_job(job["id"], "failed", exit_message=STALE_RUNNING_MESSAGE)
 
     @property
     def auto_advance(self) -> bool:

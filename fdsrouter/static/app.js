@@ -21,6 +21,9 @@ const state = {
   cpuTotalHistory: [],
   coreHistory: [],
   externalJobs: [],
+  // Whether this instance is managed by systemd, plus its revision -- drives the service
+  // section of the settings dialog.
+  serviceStatus: null,
   // The history panel shows either the current runs or the archive; archived runs are not
   // part of the regular job payload and are fetched on demand.
   showArchive: false,
@@ -303,6 +306,7 @@ async function openSettingsModal() {
   } catch (e) {
     // settings are optional -- an unreachable backend just leaves the form empty
   }
+  loadServiceStatus();
   el("settings-overlay").hidden = false;
 }
 
@@ -335,6 +339,104 @@ async function saveSettings() {
     closeSettingsModal();
   } catch (e) {
     alert(t("settingsSaveFailed", { error: e.message }));
+  }
+}
+
+// ---------- Service control (settings modal) ----------
+
+const SERVICE_BUTTON_IDS = ["service-update-btn", "service-restart-btn", "service-stop-btn"];
+
+const SERVICE_REASON_KEYS = {
+  no_systemd: "serviceNoSystemd",
+  no_unit: "serviceNoUnit",
+  needs_root: "serviceNeedsRoot",
+  no_git_checkout: "serviceNoGitCheckout",
+};
+
+/** Fetch what this instance is (systemd-managed? which revision?) and set the buttons up. */
+async function loadServiceStatus() {
+  el("service-result").textContent = "";
+  try {
+    state.serviceStatus = await apiGet("/api/service");
+  } catch (e) {
+    state.serviceStatus = null;
+  }
+  const status = state.serviceStatus;
+
+  if (!status) {
+    el("service-version").textContent = t("unknownValue");
+    setServiceButtonsDisabled(true);
+    return;
+  }
+
+  const scopeLabel = status.scope === "user" ? t("serviceScopeUser") : status.scope === "system" ? t("serviceScopeSystem") : null;
+  const revision = status.revision
+    ? [status.revision, status.revision_date].filter(Boolean).join(" · ")
+    : t("unknownValue");
+  el("service-version").textContent = [revision, scopeLabel].filter(Boolean).join(" · ");
+
+  el("service-restart-btn").disabled = !status.controllable;
+  el("service-stop-btn").disabled = !status.controllable;
+  el("service-update-btn").disabled = !status.can_update;
+
+  if (!status.controllable) {
+    el("service-result").textContent = t(SERVICE_REASON_KEYS[status.reason] || "serviceNoSystemd");
+  } else if (!status.can_update) {
+    el("service-result").textContent = t("serviceNoGitCheckout");
+  }
+}
+
+function setServiceButtonsDisabled(disabled) {
+  SERVICE_BUTTON_IDS.forEach((id) => {
+    el(id).disabled = disabled;
+  });
+}
+
+function runningJobName() {
+  const job = state.jobs.find((j) => j.id === state.runningJobId);
+  return job ? job.name : null;
+}
+
+const SERVICE_ACTION_TEXTS = {
+  restart: { confirm: "serviceRestartConfirm", confirmRunning: "serviceRestartConfirmRunning", pending: "serviceRestarting" },
+  stop: { confirm: "serviceStopConfirm", confirmRunning: "serviceStopConfirmRunning", pending: "serviceStopping" },
+  update: { confirm: "serviceUpdateConfirm", confirmRunning: "serviceUpdateConfirmRunning", pending: "serviceUpdating" },
+};
+
+/** Restart, stop or update the service this UI is served by. */
+async function serviceAction(kind) {
+  const texts = SERVICE_ACTION_TEXTS[kind];
+  const running = runningJobName();
+  const message = running ? t(texts.confirmRunning, { name: running }) : t(texts.confirm);
+  if (!confirm(message)) return;
+
+  const resultEl = el("service-result");
+  resultEl.textContent = t(texts.pending);
+  setServiceButtonsDisabled(true);
+
+  try {
+    // force is only sent once the user has been warned about the running job by name; without
+    // it the backend refuses, which catches a stale tab that does not know about the run yet.
+    const result = await apiSend(`/api/service/${kind}`, "POST", { force: Boolean(running) });
+    if (kind === "update") {
+      resultEl.textContent = result.changed
+        ? t("serviceUpdated", { before: result.revision_before || "?", after: result.revision_after || "?" })
+        : t("serviceUpdateNoChange", { revision: result.revision_after || "?" });
+      if (!result.restarted) setServiceButtonsDisabled(false);
+    }
+  } catch (e) {
+    // Restarting and stopping tear down the server, so a dropped request is the expected
+    // outcome rather than a failure -- only a real error response says something went wrong.
+    if (e instanceof TypeError && kind !== "update") return;
+    // The backend answers an impossible action with the same reason key the status uses.
+    const reasonKey = SERVICE_REASON_KEYS[e.message];
+    resultEl.textContent = e.message === "running_job"
+      ? t("serviceBlockedByJob")
+      : reasonKey
+        ? t(reasonKey)
+        : t("serviceActionFailed", { error: e.message });
+    setServiceButtonsDisabled(false);
+    if (e.message === "running_job") loadServiceStatus();
   }
 }
 
@@ -1420,6 +1522,9 @@ el("settings-overlay").addEventListener("click", (ev) => {
 el("language-select").addEventListener("change", (ev) => onLanguageChange(ev.target.value));
 el("theme-select").addEventListener("change", (ev) => onThemeChange(ev.target.value));
 el("settings-save").addEventListener("click", saveSettings);
+el("service-update-btn").addEventListener("click", () => serviceAction("update"));
+el("service-restart-btn").addEventListener("click", () => serviceAction("restart"));
+el("service-stop-btn").addEventListener("click", () => serviceAction("stop"));
 el("ha-test-btn").addEventListener("click", testEnergyConnection);
 
 el("console-close").addEventListener("click", closeConsoleLog);

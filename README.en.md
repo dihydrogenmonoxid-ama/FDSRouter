@@ -49,6 +49,8 @@ who no longer want to babysit the queue by hand.
   sensor, including electricity tariff and a solar-power flag
 - **Archive** — finished runs can be moved out of the history, stay readable under "Archive"
   and keep calibrating the runtime estimate
+- **Service control from the interface** — restart, update and stop the systemd service right
+  from the settings dialog, with a confirmation while a simulation is running
 - **Persistence** — queue, job history and metric time series live in SQLite and survive a
   restart
 - **Bilingual interface** (German/English), light and dark colour scheme
@@ -165,7 +167,23 @@ is installation-specific, is not version-controlled and can be edited freely.
 since they are children of the service. Check whether a simulation is running before `restart`
 or `stop`.
 
-Updating:
+### Controlling the service from the interface
+
+The settings dialog has a "Dienst" (service) section showing the running version and three
+buttons:
+
+- **Update** — fetches the current state (`git pull --ff-only`), reinstalls it into the virtual
+  environment and restarts the service afterwards
+- **Restart** — restarts the service, for instance after editing `config.yaml`
+- **Stop** — stops the service; the interface is then unreachable and has to be started again on
+  the machine itself (`systemctl --user start fdsrouter`)
+
+While a simulation is running, the interface asks for confirmation by job name before touching
+the service — FDS is a child process of the service and is stopped with it. A run cut short this
+way shows up in the history as failed, with a matching note. Without a registered systemd
+service the buttons stay disabled and state the reason.
+
+The same steps by hand:
 
 ```bash
 cd ~/FDSRouter
@@ -215,7 +233,8 @@ or includes optional); FDS computes in the created upload directory, and the "Er
 on a job card returns the result directory as a ZIP.
 
 **FDSRouter has no user management yet.** Anyone who can reach the interface can enqueue and
-stop jobs, so the service belongs on a trusted network only, never on the open internet.
+stop jobs — and restart, update or stop the service from the settings dialog. So it belongs on
+a trusted network only, never on the open internet.
 
 ### The interface is not reachable from another machine
 
@@ -267,6 +286,7 @@ deploy pipeline. The core logic lives in `fdsrouter/core`:
 | `estimator.py`      | computes the runtime estimate from the same node's job history               |
 | `external_jobs.py`  | detects FDS runs outside FDSRouter, strictly read-only                       |
 | `energy.py`         | reads a Home Assistant power sensor and accounts energy/cost                 |
+| `service_control.py`| drives the systemd service (restart, update, stop) for the settings dialog   |
 
 Persistence through SQLite (`fdsrouter/db`), no separate database server. The data model
 consists of `node`, `job`, `run_metric_sample`, `out_file_metric` and `settings`.

@@ -696,6 +696,9 @@ button.small { font-size: 11px; padding: 5px 9px; }
 #upload-status { display: block; margin-top: 6px; }
 .field .hint { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 
+/* A row of several buttons instead of one input -- must not overflow a narrow dialog. */
+.field.wrap { flex-wrap: wrap; row-gap: 6px; }
+
 /* ---------------------------------------------------------- file browser -- */
 
 #browser-path {

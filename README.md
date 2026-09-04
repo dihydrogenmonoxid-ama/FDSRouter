@@ -46,6 +46,8 @@ verwalten wollen.
   Home-Assistant-Sensor integrieren, inklusive Strompreis und PV-Kennzeichnung
 - **Archiv** — abgeschlossene Läufe lassen sich aus der Historie ausblenden, bleiben unter
   „Archiv“ einsehbar und kalibrieren weiterhin die Zeitschätzung
+- **Dienst aus der Oberfläche steuern** — Neustart, Aktualisierung und Beenden des systemd-Dienstes
+  direkt im Einstellungsdialog, mit Rückfrage solange eine Simulation läuft
 - **Persistenz** — Warteschlange, Job-Historie und Metrik-Verlauf liegen in SQLite und überstehen
   einen Neustart
 - **Zweisprachige Oberfläche** (Deutsch/Englisch), helles und dunkles Farbschema
@@ -164,7 +166,23 @@ an. Sie ist installationsspezifisch, wird nicht mit versioniert und lässt sich 
 weil sie Kindprozesse des Dienstes sind. Vor `restart` oder `stop` also prüfen, ob gerade eine
 Simulation läuft.
 
-Aktualisieren:
+### Dienst aus der Oberfläche steuern
+
+Der Einstellungsdialog hat einen Abschnitt „Dienst" mit der laufenden Version und drei
+Schaltflächen:
+
+- **Aktualisieren** — holt den aktuellen Stand (`git pull --ff-only`), installiert ihn in die
+  virtuelle Umgebung nach und startet den Dienst anschließend neu
+- **Neu starten** — startet den Dienst neu, etwa nachdem `config.yaml` geändert wurde
+- **Beenden** — hält den Dienst an; die Oberfläche ist danach nicht mehr erreichbar und muss auf
+  dem Rechner selbst wieder gestartet werden (`systemctl --user start fdsrouter`)
+
+Läuft gerade eine Simulation, fragt die Oberfläche mit dem Jobnamen nach, bevor sie den Dienst
+anfasst — FDS ist ein Kindprozess des Dienstes und wird mit beendet. Ein Lauf, den ein Neustart
+so beendet hat, erscheint danach in der Historie als fehlgeschlagen mit entsprechendem Hinweis.
+Ohne eingerichteten systemd-Dienst bleiben die Schaltflächen deaktiviert und nennen den Grund.
+
+Dieselben Schritte von Hand:
 
 ```bash
 cd ~/FDSRouter
@@ -215,8 +233,9 @@ Rampen oder Include-Dateien optional); FDS rechnet im angelegten Upload-Verzeich
 „Ergebnisse" an der Job-Karte kommt das Ergebnisverzeichnis als ZIP zurück.
 
 **FDSRouter hat noch keine Benutzerverwaltung.** Wer die Oberfläche erreicht, darf Jobs
-einreihen und beenden — der Dienst gehört daher ausschließlich in ein vertrauenswürdiges Netz,
-nicht ans offene Internet.
+einreihen und beenden — und über den Einstellungsdialog den Dienst neu starten, aktualisieren
+oder beenden. Der Dienst gehört daher ausschließlich in ein vertrauenswürdiges Netz, nicht ans
+offene Internet.
 
 ### Oberfläche ist vom Arbeitsplatz nicht erreichbar
 
@@ -269,6 +288,7 @@ Build- oder Deploy-Pipeline. Die Kernlogik liegt in `fdsrouter/core`:
 | `estimator.py`      | berechnet die Zeitschätzung aus der Job-Historie desselben Node              |
 | `external_jobs.py`  | erkennt rein lesend FDS-Läufe außerhalb von FDSRouter                        |
 | `energy.py`         | liest einen Home-Assistant-Leistungssensor und rechnet Energie/Kosten ab     |
+| `service_control.py`| steuert den systemd-Dienst (Neustart, Update, Stopp) fuer den Einstellungsdialog |
 
 Persistenz über SQLite (`fdsrouter/db`), kein separater Datenbankserver. Das Datenmodell kennt
 `node`, `job`, `run_metric_sample`, `out_file_metric` und `settings`.
