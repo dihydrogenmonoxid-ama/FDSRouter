@@ -10,6 +10,14 @@ const state = {
   knownDevices: [], // [{name, unit}] from the job's CHID_devc.csv
   deviceListPending: false,
   lastSimTime: null,
+  // Smoothed sim-seconds-per-wall-second, and the sample the current remaining-time estimate
+  // was computed from -- see updateRemainingEstimate. Recomputed only when a real new .out
+  // sample arrives, not on every 1s display tick, which is what keeps the countdown from
+  // jumping around between samples.
+  simRateEma: null,
+  lastProgressSample: null, // {wallMs, simTime}
+  remainingEstimateS: null,
+  remainingEstimateAtMs: null,
   // Last .out sample, so a rebuilt job card can be refilled without waiting for the next one.
   lastOut: null,
   // Recent time step sizes and the anomalies derived from them; a collapsing time step is the
@@ -35,6 +43,7 @@ const state = {
   filter: "all",
   search: "",
   archivedJobs: [],
+  nodes: [],
   projectFilter: "",
   currentUser: null,
   bootedApp: false,
@@ -244,9 +253,27 @@ async function boot() {
 
 async function refreshNodeStatus() {
   try {
-    const nodes = await apiGet("/api/nodes");
+    state.nodes = await apiGet("/api/nodes");
+  } catch (e) {
+    state.nodes = [];
+    el("node-status").innerHTML = `<span class="dot"></span>${t("nodeUnreachable")}`;
+    el("node-list-panel").hidden = true;
+    return;
+  }
+  renderNodeStatusSummary();
+  renderNodeList();
+}
+
+/** The header line: a single machine's own summary (unchanged from before clustering existed),
+ *  or an at-a-glance online/total count once more than one node has ever registered. */
+function renderNodeStatusSummary() {
+  const nodes = state.nodes;
+  if (nodes.length === 0) {
+    el("node-status").innerHTML = `<span class="dot"></span>${t("nodeUnreachable")}`;
+    return;
+  }
+  if (nodes.length === 1) {
     const node = nodes[0];
-    if (!node) return;
     el("node-status").innerHTML =
       `<span class="dot"></span>` +
       esc(
@@ -256,9 +283,42 @@ async function refreshNodeStatus() {
           ram: Math.round(node.ram_total_mb / 1024),
         })
       );
-  } catch (e) {
-    el("node-status").innerHTML = `<span class="dot"></span>${t("nodeUnreachable")}`;
+    return;
   }
+  const online = nodes.filter((n) => n.online).length;
+  el("node-status").innerHTML = `<span class="dot"></span>` + esc(t("nodeClusterSummary", { online, total: nodes.length }));
+}
+
+/** Per-node detail list -- only shown once a second node has ever registered, so a solo
+ *  installation's UI looks exactly as it did before clustering existed. */
+function renderNodeList() {
+  const container = el("node-list");
+  const nodes = state.nodes;
+  if (nodes.length <= 1) {
+    el("node-list-panel").hidden = true;
+    return;
+  }
+  el("node-list-panel").hidden = false;
+
+  const runningByNode = new Map();
+  for (const job of state.jobs) {
+    if (job.status === "running" && job.node_id) runningByNode.set(job.node_id, job);
+  }
+
+  container.innerHTML = nodes
+    .map((node) => {
+      const running = runningByNode.get(node.id);
+      const jobLine = running ? esc(t("nodeRunning", { name: running.name })) : esc(t("nodeIdle"));
+      return `<div class="node-row ${node.online ? "online" : "offline"}">
+        <span class="dot"></span>
+        <span class="node-name">${esc(node.hostname)}</span>
+        <span class="node-meta">${esc(
+          t("nodeCoresRam", { cores: node.cpu_cores, ram: Math.round(node.ram_total_mb / 1024) })
+        )}</span>
+        <span class="node-job">${jobLine}</span>
+      </div>`;
+    })
+    .join("");
 }
 
 // ---------- New Job modal: file browser + mesh/MPI preview ----------
@@ -294,6 +354,7 @@ function openNewJobModal() {
   el("upload-status").textContent = t("uploadHint");
   el("upload-folder-name").value = "";
   el("new-job-project").value = "";
+  el("new-job-deadline").value = "";
   renderCaseFindings([]);
   updateWorkingDirStep();
   el("new-job-overlay").hidden = false;
@@ -510,10 +571,12 @@ async function submitNewJob() {
   const mpiProcesses = parseInt(el("mpi-processes").value, 10) || undefined;
   el("new-job-submit").disabled = true;
   try {
+    const deadlineValue = el("new-job-deadline").value;
     await apiSend("/api/jobs", "POST", {
       fds_file_path: modalState.selectedFilePath,
       mpi_processes: mpiProcesses,
       project: el("new-job-project").value.trim() || undefined,
+      scheduled_stop_at: deadlineValue ? new Date(deadlineValue).toISOString() : undefined,
     });
     closeNewJobModal();
   } catch (e) {
@@ -1171,7 +1234,13 @@ function renderJobs() {
   const running = state.jobs.find((j) => j.status === "running");
   const previousRunning = state.runningJobId;
   state.runningJobId = running ? running.id : null;
-  if (state.runningJobId !== previousRunning) state.lastSimTime = null;
+  if (state.runningJobId !== previousRunning) {
+    state.lastSimTime = null;
+    state.simRateEma = null;
+    state.lastProgressSample = null;
+    state.remainingEstimateS = null;
+    state.remainingEstimateAtMs = null;
+  }
 
   // Position in the queue is a property of the queue, not of the current filter -- numbering
   // the filtered rows would tell a searching operator the wrong place in line.
@@ -1231,6 +1300,7 @@ function renderJobs() {
     if (!stillPresent.has(id)) state.compareSelection.delete(id);
   }
   updateCompareButton();
+  renderNodeList();
 
   updateDashboardVisibility();
 }
@@ -1265,6 +1335,72 @@ function renderEmptyState() {
   return li;
 }
 
+/** "· endet spätestens um HH:MM" appended to a job-meta line when a deadline is set. */
+function scheduledStopMetaSuffix(job) {
+  if (!job.scheduled_stop_at) return "";
+  return " · " + esc(t("scheduledStopMeta", { clock: formatClock(new Date(job.scheduled_stop_at)) }));
+}
+
+/** "YYYY-MM-DDTHH:mm" in local time, as a <input type="datetime-local"> expects -- the input has
+ *  no timezone concept of its own, so both directions go through the browser's local time. */
+function toDatetimeLocalValue(isoString) {
+  const d = new Date(isoString);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** A small toggle button plus an inline form to set/clear a job's deadline -- shared between the
+ *  queued and running cards, since a deadline is just as meaningful before a run starts as
+ *  during it. */
+function attachScheduledStopControl(li, job) {
+  const actions = li.querySelector(".job-actions");
+  if (!actions) return;
+
+  const btn = document.createElement("button");
+  btn.className = "secondary small";
+  btn.textContent = "⏱";
+  btn.title = t("scheduledStopButtonTitle");
+
+  const form = document.createElement("div");
+  form.className = "deadline-form";
+  form.hidden = true;
+  form.innerHTML = `
+    <input type="datetime-local" class="deadline-input" />
+    <button class="small deadline-save">${esc(t("save"))}</button>
+    <button class="secondary small deadline-clear">${esc(t("scheduledStopClear"))}</button>`;
+  if (job.scheduled_stop_at) {
+    form.querySelector(".deadline-input").value = toDatetimeLocalValue(job.scheduled_stop_at);
+  }
+
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    form.hidden = !form.hidden;
+  };
+  form.querySelector(".deadline-save").onclick = async (ev) => {
+    ev.stopPropagation();
+    const value = form.querySelector(".deadline-input").value;
+    if (!value) return;
+    try {
+      await apiSend(`/api/jobs/${job.id}`, "PATCH", { scheduled_stop_at: new Date(value).toISOString() });
+      form.hidden = true;
+    } catch (e) {
+      alert(t("scheduledStopFailed", { error: e.message }));
+    }
+  };
+  form.querySelector(".deadline-clear").onclick = async (ev) => {
+    ev.stopPropagation();
+    try {
+      await apiSend(`/api/jobs/${job.id}`, "PATCH", { scheduled_stop_at: null });
+      form.hidden = true;
+    } catch (e) {
+      alert(t("scheduledStopFailed", { error: e.message }));
+    }
+  };
+
+  actions.appendChild(btn);
+  li.appendChild(form);
+}
+
 function renderRunningCard(job) {
   const li = document.createElement("li");
   li.className = "job running";
@@ -1279,7 +1415,7 @@ function renderRunningCard(job) {
       machine: job.node_hostname ?? t("unknownValue"),
       mpi: job.mpi_process_count,
       cells: job.mesh_cell_count ?? t("unknownValue"),
-    }))}</div>
+    }))}${scheduledStopMetaSuffix(job)}</div>
     <div class="verdict" id="run-verdict">${esc(t("verdictStarting"))}</div>
     <div class="anomalies" id="run-anomalies"></div>
     <div class="live-row">
@@ -1321,6 +1457,7 @@ function renderRunningCard(job) {
   };
   li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
   li.querySelector(".job-actions").appendChild(renderResultsButton(job.id));
+  attachScheduledStopControl(li, job);
 
   // The card is rebuilt on every queue update, so the select is repopulated from state here.
   const select = li.querySelector("#plot-signal");
@@ -1344,7 +1481,14 @@ function renderQueuedCard(job, isNext, position) {
       duration: fmtDuration(job.estimated_duration_s),
       cells: job.mesh_cell_count ?? t("unknownValue"),
       mpi: job.mpi_process_count,
-    }))}</div>
+    }))}${
+      // Only worth a line once a second node exists -- in a solo install every job is
+      // trivially "assigned" to the only node the moment it's queued, so this would just add
+      // noise to the one case that's still by far the most common.
+      state.nodes.length > 1
+        ? " · " + esc(job.node_hostname ? t("nodeAssigned", { name: job.node_hostname }) : t("nodeAssigning"))
+        : ""
+    }${scheduledStopMetaSuffix(job)}</div>
     <div class="job-actions">
       ${isNext ? `<button class="small" id="start-btn">${t("startJob")}</button>` : ""}
       <button class="secondary small cancel-btn">${t("removeJob")}</button>
@@ -1370,6 +1514,7 @@ function renderQueuedCard(job, isNext, position) {
     };
   }
 
+  attachScheduledStopControl(li, job);
   attachDragHandlers(li);
   return li;
 }
@@ -1774,6 +1919,58 @@ function appendSample(series, time, value) {
   if (series.length > MAX_PLOT_SAMPLES) series.shift();
 }
 
+// EMA weight for the sim-seconds/wall-second rate: high enough to track a run settling into a
+// steady pace within a few samples, low enough that one noisy sample doesn't swing the ETA.
+const SIM_RATE_EMA_ALPHA = 0.3;
+
+/** Called once per *real* new .out sample (not on every 1s display tick). Recomputes the
+ *  remaining-time estimate from a smoothed recent rate rather than "total elapsed / total
+ *  fraction so far" -- the old approach baked slow startup overhead into the average for the
+ *  whole run and recomputed a fresh linear extrapolation on every tick even when simulation
+ *  time hadn't moved, which is exactly what made the countdown creep up and then jump back down
+ *  between samples. */
+function updateRemainingEstimate(job, simTime, now = Date.now()) {
+  const prev = state.lastProgressSample;
+
+  if (!prev) {
+    // First sample since the job started (or since we started watching it) -- nothing to take
+    // a rate from yet, just anchor the next delta. Leaves any existing estimate (e.g. seeded
+    // from history in loadJobHistoryForChart) as-is rather than blanking it.
+    state.lastProgressSample = { wallMs: now, simTime };
+    return;
+  }
+
+  if (simTime <= prev.simTime) {
+    // A duplicate poll before FDS wrote a new step -- not real progress. Deliberately leave
+    // both lastProgressSample and the current estimate untouched: the next real advance is
+    // measured over the true interval, and the local countdown (currentRemainingEstimateS)
+    // keeps ticking smoothly through this call instead of being reset to a stale value.
+    return;
+  }
+
+  const wallDeltaS = (now - prev.wallMs) / 1000;
+  if (wallDeltaS > 0) {
+    const instantRate = (simTime - prev.simTime) / wallDeltaS;
+    state.simRateEma = state.simRateEma == null ? instantRate : SIM_RATE_EMA_ALPHA * instantRate + (1 - SIM_RATE_EMA_ALPHA) * state.simRateEma;
+  }
+  state.lastProgressSample = { wallMs: now, simTime };
+
+  if (state.simRateEma != null && state.simRateEma > 0) {
+    const remainingSimTime = Math.max(0, job.sim_end_time_s - simTime);
+    state.remainingEstimateS = remainingSimTime / state.simRateEma;
+    state.remainingEstimateAtMs = now;
+  }
+}
+
+/** The remaining-time estimate ticked down locally by however long it's been since it was last
+ *  actually recomputed -- a smooth per-second countdown between samples instead of recomputing
+ *  (and thus jumping) on every display tick. */
+function currentRemainingEstimateS() {
+  if (state.remainingEstimateS == null) return null;
+  const elapsedSinceEstimateS = (Date.now() - state.remainingEstimateAtMs) / 1000;
+  return Math.max(0, state.remainingEstimateS - elapsedSinceEstimateS);
+}
+
 function updateProgress(simTime) {
   const job = currentRunningJob();
   const bar = el("running-progress-bar");
@@ -1788,11 +1985,15 @@ function updateProgress(simTime) {
   setText("running-progress-pct", `${(fraction * 100).toFixed(1)} %`);
 
   if (job.started_at && fraction > 0.001) {
-    const elapsedS = (Date.now() - Date.parse(job.started_at)) / 1000;
-    const remainingS = (elapsedS * (1 - fraction)) / fraction;
-    setText("run-remaining", fmtDuration(remainingS));
-    updateRunVerdict(remainingS);
+    updateRemainingEstimate(job, simTime);
+    renderRemainingTime();
   }
+}
+
+function renderRemainingTime() {
+  const remainingS = currentRemainingEstimateS();
+  setText("run-remaining", remainingS != null ? fmtDuration(remainingS) : "–");
+  updateRunVerdict(remainingS);
 }
 
 /** A clock time, with the date attached once the run reaches into another day. */
@@ -1825,7 +2026,10 @@ function tickElapsedAndRemaining() {
   }
   const elapsedS = (Date.now() - Date.parse(job.started_at)) / 1000;
   setText("run-elapsed", fmtDuration(elapsedS));
-  if (state.lastSimTime != null) updateProgress(state.lastSimTime);
+  // Ticks the already-computed estimate down by a second rather than recomputing it from
+  // state.lastSimTime (which hasn't changed since the last real sample) -- see
+  // updateRemainingEstimate for why recomputing here was the source of the jumpiness.
+  if (state.remainingEstimateS != null) renderRemainingTime();
 }
 
 // ---------- Permanent system panel (independent of any job) ----------
@@ -2075,9 +2279,23 @@ async function loadJobHistoryForChart(jobId) {
       state.lastSimTime = m.simulation_time_s ?? state.lastSimTime;
     }
     drawLivePlot();
+    seedRemainingEstimateFromHistory(metrics.out_file_metrics);
   } catch (e) {
     // best effort only
   }
+}
+
+/** Opening a tab onto an already-running job (or reconnecting) would otherwise show "–" for the
+ *  remaining time until the next live sample -- feed the two most recent history samples through
+ *  the same rate estimator a live update uses, so the countdown starts warm instead of cold. */
+function seedRemainingEstimateFromHistory(outFileMetrics) {
+  const job = currentRunningJob();
+  if (!job || !job.sim_end_time_s) return;
+  const withTime = (outFileMetrics || []).filter((m) => m.simulation_time_s != null && m.timestamp);
+  if (withTime.length < 2) return;
+  const [first, last] = [withTime[0], withTime[withTime.length - 1]];
+  state.lastProgressSample = { wallMs: Date.parse(first.timestamp), simTime: first.simulation_time_s };
+  updateRemainingEstimate(job, last.simulation_time_s, Date.parse(last.timestamp));
 }
 
 // ---------- External (unmanaged) FDS runs -- read-only ----------

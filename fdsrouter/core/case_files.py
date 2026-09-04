@@ -99,3 +99,43 @@ def write_results_zip(fds_file: Path, target_zip: Path) -> int:
         for file in files:
             archive.write(file, arcname=file.name)
     return len(files)
+
+
+def write_directory_zip(source_dir: Path, target_zip: Path) -> int:
+    """Zip every file directly inside source_dir (flat, not recursive -- FDS never writes into
+    subdirectories of its own working directory).
+
+    Used for cluster case-file transfer, in both directions: unlike write_results_zip, this is
+    not filtered to CHID-prefixed/exact-name files, because an uploaded auxiliary input (a ramp
+    .csv, an included .inc with an arbitrary name) is not necessarily CHID-prefixed before FDS
+    has even run -- only its own *output* reliably is. Safe to ship the whole directory because
+    an uploaded case already gets an exclusive directory (create_case_dir/create_named_case_dir);
+    a browsed directory shared with unrelated cases is a pre-existing, documented simplification
+    (see result_files' own docstring for the same caveat on downloads).
+    """
+    files = [f for f in sorted(source_dir.iterdir()) if f.is_file()]
+    with zipfile.ZipFile(target_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
+        for file in files:
+            archive.write(file, arcname=file.name)
+    return len(files)
+
+
+def extract_zip(zip_path: Path, target_dir: Path) -> int:
+    """Inverse of write_directory_zip -- extract every member flat into target_dir, returning how
+    many files were written. Rejects any member whose name would resolve outside target_dir (a
+    zip-slip guard), since this is used to receive an archive built by another machine."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    resolved_target = target_dir.resolve()
+    written = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+            name = safe_filename(member.filename)
+            destination = (target_dir / name).resolve()
+            if destination != resolved_target and resolved_target not in destination.parents:
+                raise ValueError(f"unsafe path in archive: {member.filename!r}")
+            with archive.open(member) as source, destination.open("wb") as sink:
+                sink.write(source.read())
+            written += 1
+    return written

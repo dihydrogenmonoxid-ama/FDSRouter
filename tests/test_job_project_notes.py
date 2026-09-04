@@ -54,6 +54,39 @@ def test_patch_unknown_job_is_404(client):
     assert response.status_code == 404
 
 
+def test_create_job_accepts_a_scheduled_stop(client, tmp_path):
+    fds_path = _write_case(tmp_path)
+    response = client.post(
+        "/api/jobs", json={"fds_file_path": fds_path, "scheduled_stop_at": "2100-01-01T00:00:00+00:00"}
+    )
+    assert response.status_code == 200
+    assert response.json()["scheduled_stop_at"] == "2100-01-01T00:00:00+00:00"
+
+
+def test_patch_sets_and_clears_the_scheduled_stop(client, tmp_path):
+    fds_path = _write_case(tmp_path)
+    job = client.post("/api/jobs", json={"fds_file_path": fds_path}).json()
+
+    set_resp = client.patch(f"/api/jobs/{job['id']}", json={"scheduled_stop_at": "2100-01-01T00:00:00+00:00"})
+    assert set_resp.json()["scheduled_stop_at"] == "2100-01-01T00:00:00+00:00"
+
+    # Explicit null must actually clear it -- unlike project/notes, omission and "please clear
+    # this" are not the same request for a deadline.
+    clear_resp = client.patch(f"/api/jobs/{job['id']}", json={"scheduled_stop_at": None})
+    assert clear_resp.json()["scheduled_stop_at"] is None
+
+
+def test_patch_without_scheduled_stop_key_leaves_it_untouched(client, tmp_path):
+    fds_path = _write_case(tmp_path)
+    job = client.post(
+        "/api/jobs", json={"fds_file_path": fds_path, "scheduled_stop_at": "2100-01-01T00:00:00+00:00"}
+    ).json()
+
+    response = client.patch(f"/api/jobs/{job['id']}", json={"notes": "x"})
+
+    assert response.json()["scheduled_stop_at"] == "2100-01-01T00:00:00+00:00"
+
+
 def test_job_deep_link_serves_the_frontend_shell(client):
     response = client.get("/job/some-job-id")
     assert response.status_code == 200

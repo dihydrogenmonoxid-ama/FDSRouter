@@ -37,7 +37,13 @@ CREATE TABLE IF NOT EXISTS job (
     archived_at TEXT,
     created_by TEXT,
     project TEXT,
-    notes TEXT
+    notes TEXT,
+    stop_requested_at TEXT,
+    start_requested_at TEXT,
+    -- Operator-chosen deadline (ISO datetime): a queued job past this is cancelled instead of
+    -- started, a running one is stopped -- for a case that must not still be occupying the
+    -- machine (or blocking the next in line) come a certain time, regardless of progress.
+    scheduled_stop_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_status_queue ON job (status, queue_position);

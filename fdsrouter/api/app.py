@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import platform
 import uuid
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fdsrouter.api import (
+    routes_agent,
     routes_auth,
     routes_browse,
     routes_jobs,
@@ -89,7 +91,9 @@ def create_app(config: Config) -> FastAPI:
         # behind before the dispatch loop starts looking at the queue.
         queue_manager.recover_stale_running_job()
         queue_manager.start()
-        system_task = asyncio.create_task(system_monitor.poll_loop(config, system_state, ws_manager.broadcast))
+        system_task = asyncio.create_task(
+            system_monitor.poll_loop(config, system_state, ws_manager.broadcast, node_id)
+        )
         external_task = asyncio.create_task(
             external_jobs.poll_loop(config, queue_manager, ws_manager.broadcast)
         )
@@ -101,6 +105,7 @@ def create_app(config: Config) -> FastAPI:
             await queue_manager.stop()
 
     app = FastAPI(title="FDSRouter", lifespan=lifespan)
+    app.include_router(routes_agent.router)
     app.include_router(routes_auth.router)
     app.include_router(routes_jobs.router)
     app.include_router(routes_nodes.router)
@@ -123,6 +128,19 @@ def create_app(config: Config) -> FastAPI:
         """
         path = request.url.path
         request.state.user = None
+
+        if path.startswith("/api/agent/"):
+            # A remote fdsrouter-agent process authenticates with the shared cluster_token, not
+            # a browser session -- entirely separate from the account/session logic below, and
+            # checked regardless of bootstrap mode (an agent's token requirement doesn't relax
+            # just because no human account exists yet).
+            token = request.app.state.config.cluster_token
+            authorization = request.headers.get("authorization", "")
+            presented = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+            if not token or not presented or not hmac.compare_digest(presented, token):
+                return JSONResponse({"detail": "Ungueltiges oder fehlendes Cluster-Token"}, status_code=401)
+            return await call_next(request)
+
         if not path.startswith("/api/"):
             return await call_next(request)
 

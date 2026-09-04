@@ -16,6 +16,7 @@ from typing import Awaitable, Callable
 import psutil
 
 from fdsrouter.config import Config
+from fdsrouter.core import out_parser
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,32 @@ async def stream_output(process: asyncio.subprocess.Process, on_line: Callable[[
     assert process.stdout is not None
     async for raw_line in process.stdout:
         await on_line(raw_line.decode("utf-8", errors="replace").rstrip("\n"))
+
+
+def determine_run_status(
+    out_path: Path,
+    recent_log_lines: list[str],
+    stop_requested: bool,
+    return_code: int | None,
+) -> tuple[str, str | None]:
+    """Decide a finished run's outcome -- shared by the local dispatcher and a remote agent, so
+    the two never drift apart on what counts as success.
+
+    A 0 exit code alone is not trustworthy: mpirun/prterun can still return 0 even when FDS
+    itself reports "improperly set-up" (verified against a real bad-input run) -- the .out
+    file's own completion marker plus a console-log ERROR check are the actual signal. No .out
+    file at all (FDS never got that far) also means failure.
+    """
+    if stop_requested:
+        return "cancelled", "durch Nutzer beendet"
+
+    out_status = out_parser.parse_out_file(out_path)
+    log_has_error = any("error" in line.lower() for line in recent_log_lines)
+    if out_status is not None and out_status.completed_successfully and not log_has_error:
+        return "done", None
+
+    tail = "\n".join(recent_log_lines[-5:]).strip()
+    return "failed", tail if tail else f"exit code {return_code}"
 
 
 async def terminate(process: asyncio.subprocess.Process, grace_period_s: float = 15.0) -> None:

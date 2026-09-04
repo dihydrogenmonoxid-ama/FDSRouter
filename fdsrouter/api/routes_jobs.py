@@ -25,6 +25,9 @@ class JobCreate(BaseModel):
     name: str | None = None
     mpi_processes: int | None = None
     project: str | None = None
+    # ISO datetime string. A queued job past this is cancelled instead of started, a running
+    # one is stopped -- see QueueManager._enforce_scheduled_stops.
+    scheduled_stop_at: str | None = None
 
 
 class ReorderRequest(BaseModel):
@@ -34,6 +37,10 @@ class ReorderRequest(BaseModel):
 class JobUpdate(BaseModel):
     project: str | None = None
     notes: str | None = None
+    # None here is ambiguous between "leave alone" and "clear it" (both look the same on the
+    # wire) for project/notes, but scheduled_stop_at needs to support an explicit clear -- see
+    # its handling in update_job(), which checks model_fields_set instead of just "is not None".
+    scheduled_stop_at: str | None = None
 
 
 def _actor(request: Request) -> str | None:
@@ -96,6 +103,7 @@ async def create_job(payload: JobCreate, request: Request) -> dict:
             mpi_processes=payload.mpi_processes,
             actor=_actor(request),
             project=payload.project,
+            scheduled_stop_at=payload.scheduled_stop_at,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -147,6 +155,8 @@ def update_job(job_id: str, payload: JobUpdate, request: Request) -> dict:
     project = payload.project if payload.project is not None else job.get("project")
     notes = payload.notes if payload.notes is not None else job.get("notes")
     db.update_job(job_id, project=project, notes=notes)
+    if "scheduled_stop_at" in payload.model_fields_set:
+        db.set_scheduled_stop(job_id, payload.scheduled_stop_at)
     db.insert_audit_entry(_actor(request), "job_edit", job_id=job_id)
     return _require_job(job_id, request)
 

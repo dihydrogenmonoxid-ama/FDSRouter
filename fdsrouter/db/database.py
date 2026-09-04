@@ -11,7 +11,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -50,6 +50,15 @@ class Database:
             ("created_by", "ALTER TABLE job ADD COLUMN created_by TEXT"),
             ("project", "ALTER TABLE job ADD COLUMN project TEXT"),
             ("notes", "ALTER TABLE job ADD COLUMN notes TEXT"),
+            # Set when a running job on a remote node should stop. A remote FDS process can't be
+            # signalled directly -- this is picked up by the agent's next metrics report instead.
+            ("stop_requested_at", "ALTER TABLE job ADD COLUMN stop_requested_at TEXT"),
+            # Explicit per-job "Start" bypassing auto_advance for a job already assigned to a
+            # remote node -- there is no other way to signal that node before its next poll.
+            ("start_requested_at", "ALTER TABLE job ADD COLUMN start_requested_at TEXT"),
+            # Operator-chosen deadline: a queued job past this is cancelled instead of started,
+            # a running one is stopped -- see QueueManager._enforce_scheduled_stops.
+            ("scheduled_stop_at", "ALTER TABLE job ADD COLUMN scheduled_stop_at TEXT"),
         ):
             if column not in columns:
                 self.conn.execute(ddl)
@@ -87,7 +96,7 @@ class Database:
         *,
         name: str,
         fds_file_path: str,
-        node_id: str,
+        node_id: str | None,
         mesh_cell_count: int | None,
         sim_end_time_s: float | None,
         mpi_process_count: int,
@@ -97,6 +106,7 @@ class Database:
         created_by: str | None = None,
         project: str | None = None,
         notes: str | None = None,
+        scheduled_stop_at: str | None = None,
     ) -> dict[str, Any]:
         job_id = uuid.uuid4().hex
         with self._lock, self.conn:
@@ -108,13 +118,13 @@ class Database:
                 INSERT INTO job (
                     id, name, fds_file_path, case_hash, node_id, status, queue_position, priority,
                     mesh_cell_count, sim_end_time_s, mpi_process_count, created_at, estimated_duration_s,
-                    created_by, project, notes
-                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_by, project, notes, scheduled_stop_at
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id, name, fds_file_path, case_hash, node_id, next_pos, priority,
                     mesh_cell_count, sim_end_time_s, mpi_process_count, _now(), estimated_duration_s,
-                    created_by, project, notes,
+                    created_by, project, notes, scheduled_stop_at,
                 ),
             )
         return self.get_job(job_id)  # type: ignore[return-value]
@@ -124,6 +134,24 @@ class Database:
             self.conn.execute(
                 "UPDATE job SET project=?, notes=? WHERE id=?", (project, notes, job_id)
             )
+
+    def set_scheduled_stop(self, job_id: str, scheduled_stop_at: str | None) -> None:
+        """scheduled_stop_at=None clears it. Allowed on a queued or running job -- past that,
+        the deadline no longer means anything."""
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE job SET scheduled_stop_at=? WHERE id=? AND status IN ('queued', 'running')",
+                (scheduled_stop_at, job_id),
+            )
+
+    def get_jobs_past_scheduled_stop(self, now: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM job WHERE scheduled_stop_at IS NOT NULL AND scheduled_stop_at <= ? "
+                "AND status IN ('queued', 'running')",
+                (now,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -237,18 +265,19 @@ class Database:
             )
         return True
 
-    def reorder_queue(self, node_id: str, ordered_job_ids: list[str]) -> None:
+    def reorder_queue(self, ordered_job_ids: list[str]) -> None:
         """Set queue_position for the given queued job ids, in the given order.
 
         Only jobs currently in status='queued' may be reordered -- a running job is never
-        touched here, which is how "running stays pinned" is enforced (see CLAUDE.md 7.2).
+        touched here, which is how "running stays pinned" is enforced (see CLAUDE.md 7.2). Not
+        filtered by node: queue_position is a single global ordering (create_job's own
+        next-position query already has no node filter either), and a job may still be
+        node_id=None (not yet assigned by the scheduler) or assigned-but-not-yet-started -- both
+        belong in the same reorderable list, matching the single "one list" the frontend shows.
         """
         with self._lock, self.conn:
             queued_ids = {
-                r["id"]
-                for r in self.conn.execute(
-                    "SELECT id FROM job WHERE node_id=? AND status='queued'", (node_id,)
-                ).fetchall()
+                r["id"] for r in self.conn.execute("SELECT id FROM job WHERE status='queued'").fetchall()
             }
             if set(ordered_job_ids) != queued_ids:
                 raise ValueError("ordered_job_ids must contain exactly the currently queued jobs")
@@ -263,6 +292,67 @@ class Database:
                 "SELECT * FROM job WHERE node_id=? AND status='done' AND mesh_cell_count IS NOT NULL "
                 "AND actual_duration_s IS NOT NULL ORDER BY finished_at DESC",
                 (node_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_completed_jobs(self) -> list[dict[str, Any]]:
+        """Same as get_completed_jobs_for_node, without the node filter -- once a job is not
+        pinned to a node at creation time, the runtime estimate has to calibrate across whichever
+        nodes have actually finished similar cases, not just the local one."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM job WHERE status='done' AND mesh_cell_count IS NOT NULL "
+                "AND actual_duration_s IS NOT NULL ORDER BY finished_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Scheduling (multi-node) ---------------------------------------------------
+
+    def get_unassigned_queued_jobs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM job WHERE node_id IS NULL AND status='queued' ORDER BY queue_position ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_busy_node_ids(self) -> set[str]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT DISTINCT node_id FROM job WHERE status='running' AND node_id IS NOT NULL"
+            ).fetchall()
+        return {r["node_id"] for r in rows}
+
+    def assign_job_to_node(self, job_id: str, node_id: str) -> None:
+        # The IS NULL/status='queued' guard makes this a safe no-op if the job was already
+        # assigned or cancelled by the time the scheduler tick gets to it.
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE job SET node_id=? WHERE id=? AND node_id IS NULL AND status='queued'",
+                (node_id, job_id),
+            )
+
+    def set_stop_requested(self, job_id: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE job SET stop_requested_at=? WHERE id=? AND status='running'", (_now(), job_id)
+            )
+
+    def set_start_requested(self, job_id: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE job SET start_requested_at=? WHERE id=? AND status='queued'", (_now(), job_id)
+            )
+
+    def get_running_jobs_with_stale_node(self, threshold_s: float) -> list[dict[str, Any]]:
+        """Running jobs whose node hasn't heartbeated recently enough to be considered alive --
+        the only way to notice a remote agent died mid-run, since nothing ever flips node.status
+        back to offline on its own."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=threshold_s)).isoformat()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT job.* FROM job JOIN node ON node.id = job.node_id "
+                "WHERE job.status='running' AND (node.last_heartbeat IS NULL OR node.last_heartbeat < ?)",
+                (cutoff,),
             ).fetchall()
         return [dict(r) for r in rows]
 

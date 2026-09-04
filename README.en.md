@@ -60,8 +60,9 @@ who no longer want to babysit the queue by hand.
   update and stop; starts with the session
 - **Bilingual interface** — English by default, German switchable in the settings (the choice
   is remembered in the browser); light and dark colour scheme
-- **Multi-node ready data model** — v1 only uses the local machine, but the node registration
-  and heartbeat schema is already in place so further compute nodes can be attached later
+- **Multi-machine cluster** — attach further Linux/macOS machines as compute nodes via
+  `fdsrouter agent`; a scheduler automatically hands each waiting job to the next free node it
+  fits on (see [Cluster / multiple machines](#cluster--multiple-machines))
 
 ## Requirements
 
@@ -239,6 +240,7 @@ to your installation and is deliberately not version-controlled.
 | `upload_dir`            | where uploaded cases are stored (one subdirectory per upload)        |
 | `max_upload_mb`         | size limit for a single upload, in MB                               |
 | `temperature_enabled`   | temperature readout on/off (usually empty on macOS without `sudo`)  |
+| `cluster_token`         | shared secret for compute nodes (`fdsrouter agent`), generated automatically — see [Cluster / multiple machines](#cluster--multiple-machines) |
 
 Energy and Home Assistant settings change during operation and are therefore edited in the
 interface's settings dialog rather than in `config.yaml`.
@@ -273,9 +275,11 @@ a job card returns as a ZIP. Two fields control it:
 
 The line underneath spells out the full path that will be created.
 
-**FDSRouter has no user management yet.** Anyone who can reach the interface can enqueue and
-stop jobs — and restart, update or stop the service from the settings dialog. So it belongs on
-a trusted network only, never on the open internet.
+**Access.** Until an account has been created the interface is open — anyone who can reach it can
+enqueue and stop jobs and control the service. As soon as the first account is created via the
+login screen, FDSRouter requires a login from then on; there is still no role/permission system,
+every account can do everything. Either way, the service belongs on a trusted network only,
+never on the open internet.
 
 ### The interface is not reachable from another machine
 
@@ -315,6 +319,47 @@ sensors                      # shows what is readable afterwards
 If `sensors` finds no fans either, the hardware does not expose them (common on servers and in
 virtual machines). No core functionality depends on it, and the reason is shown as a tooltip on
 the readout.
+
+## Cluster / multiple machines
+
+One FDSRouter machine (the "Controller") can attach further Linux/macOS machines as compute
+nodes. The queue stays a single global list — no target machine is picked when a job is
+enqueued; a simple scheduler automatically hands each waiting job to the next free node whose
+core count fits the chosen MPI process count.
+
+On each additional machine:
+
+```bash
+git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
+cd FDSRouter
+python3 -m venv .venv && .venv/bin/pip install -e .
+mkdir compute-node && cd compute-node
+../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
+```
+
+The first start creates `agent-config.yaml` (template; `fds_binary`/`mpi_executable` are
+auto-detected via `PATH` just like on the Controller) and exits right away — `cluster_token` in
+it is still empty. That value already sits in the **Controller's** own `config.yaml`
+(auto-generated on its very first start); copy it unchanged into every compute node's
+`agent-config.yaml` and start the agent again:
+
+```bash
+grep '^cluster_token' /path/to/controller/config.yaml
+../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
+```
+
+Once connected, the node shows up in the interface under "System" (once more than one node is
+known, an additional section lists every node with its status and current job). Case files
+travel to and from the node as a ZIP through the Controller — no shared network drive is
+needed, only a network path from the compute node to the Controller (the agent polls the
+Controller itself, so no inbound firewall rule is needed on the compute node).
+
+"Auto-continue" and the per-job Start button still apply across nodes: a job assigned to a node
+only starts there once the queue is set to auto-continue, or that job was started individually —
+exactly like a local run.
+
+For always-on operation on a compute node, a systemd service analogous to `fdsrouter start`
+works well (see [Autostart](#autostart-systemd)), just with `fdsrouter agent` as `ExecStart`.
 
 ## Tests
 

@@ -34,7 +34,7 @@ def test_reorder_changes_positions(db):
     j2 = _make_job(db, "b")
     j3 = _make_job(db, "c")
 
-    db.reorder_queue("node-1", [j3["id"], j1["id"], j2["id"]])
+    db.reorder_queue([j3["id"], j1["id"], j2["id"]])
 
     jobs = {j["id"]: j for j in db.get_jobs(statuses=["queued"])}
     assert jobs[j3["id"]]["queue_position"] == 0
@@ -49,10 +49,10 @@ def test_running_job_is_excluded_from_reorderable_set(db):
 
     # j1 is running now -- it must not be accepted as part of the reorder set.
     with pytest.raises(ValueError):
-        db.reorder_queue("node-1", [j1["id"], j2["id"]])
+        db.reorder_queue([j1["id"], j2["id"]])
 
     # Reordering just the still-queued jobs works fine and leaves the running job alone.
-    db.reorder_queue("node-1", [j2["id"]])
+    db.reorder_queue([j2["id"]])
     assert db.get_job(j1["id"])["status"] == "running"
     assert db.get_job(j1["id"])["queue_position"] is None
 
@@ -62,10 +62,10 @@ def test_reorder_rejects_unknown_or_missing_ids(db):
     _make_job(db, "b")
 
     with pytest.raises(ValueError):
-        db.reorder_queue("node-1", [j1["id"]])  # missing j2
+        db.reorder_queue([j1["id"]])  # missing j2
 
     with pytest.raises(ValueError):
-        db.reorder_queue("node-1", [j1["id"], "does-not-exist"])
+        db.reorder_queue([j1["id"], "does-not-exist"])
 
 
 def test_cancel_only_affects_queued_jobs(db):
@@ -90,7 +90,7 @@ def test_cancel_does_not_affect_done_jobs(db):
 def test_get_next_queued_job_respects_position(db):
     j1 = _make_job(db, "a")
     j2 = _make_job(db, "b")
-    db.reorder_queue("node-1", [j2["id"], j1["id"]])
+    db.reorder_queue([j2["id"], j1["id"]])
     nxt = db.get_next_queued_job("node-1")
     assert nxt["id"] == j2["id"]
 

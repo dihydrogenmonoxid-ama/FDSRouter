@@ -3,9 +3,12 @@ endpoint shape is what a future remote agent process would call too (CLAUDE.md s
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from fdsrouter.core import scheduler
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
@@ -20,7 +23,14 @@ class NodeRegistration(BaseModel):
 
 @router.get("")
 def list_nodes(request: Request) -> list[dict]:
-    return request.app.state.db.get_nodes()
+    # node.status in the DB is write-only-to-'online' (see database.py) -- whether a node is
+    # actually still alive is a read-time freshness check against last_heartbeat instead, the
+    # same one the scheduler itself uses to decide eligibility.
+    now = datetime.now(timezone.utc)
+    nodes = request.app.state.db.get_nodes()
+    for node in nodes:
+        node["online"] = scheduler.is_node_online(node, now)
+    return nodes
 
 
 @router.post("/register")

@@ -1115,6 +1115,57 @@ button.small { font-size: 11px; padding: 5px 9px; }
 .audit-list li { padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
 .audit-list li:last-child { border-bottom: none; }
 
+/* -------------------------------------------------------------------- nodes -- */
+
+.node-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 11.5px;
+}
+
+.node-row:last-child { border-bottom: none; }
+
+.node-row .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.node-row.offline .dot { background: var(--text-faint); }
+.node-row.offline .node-name { color: var(--text-faint); }
+
+.node-name { font-weight: 600; }
+.node-meta, .node-job {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.node-job { margin-left: auto; text-align: right; }
+
+/* --------------------------------------------------------------- deadlines -- */
+
+.deadline-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.deadline-form input[type="datetime-local"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 5px 7px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+
+.deadline-form input:focus { outline: 1px solid var(--data); outline-offset: -1px; border-color: var(--data); }
+
 /* -------------------------------------------------------------- compare view -- */
 
 #compare-kpi-table { margin-top: 12px; }

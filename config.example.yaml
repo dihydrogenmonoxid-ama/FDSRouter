@@ -6,7 +6,8 @@
 
 # 127.0.0.1 keeps FDSRouter reachable only from this machine. To operate it from other
 # computers in the office (browser on a workstation, service on the compute server), set this
-# to "0.0.0.0". FDSRouter has no authentication yet, so only do that on a trusted network.
+# to "0.0.0.0". FDSRouter is open until the first account is created via the login screen, and
+# has no role/permission system even after that -- only run it on a trusted network.
 host: "127.0.0.1"
 port: 8000
 open_browser: true
@@ -40,3 +41,13 @@ max_upload_mb: 512
 # Temperature/fan readout is platform-dependent and usually unavailable on macOS without
 # sudo. Core functionality (queue, load monitoring, out-file parsing) does not depend on it.
 temperature_enabled: true
+
+# Off by default. Set to a header name (e.g. "X-Remote-User") to trust an already-authenticated
+# username from that header instead of requiring a password login -- only safe behind a reverse
+# proxy that authenticates the request itself and strips any client-supplied copy of the header.
+trusted_proxy_header: null
+
+# Shared secret a remote `fdsrouter agent` process presents to join this Controller as a
+# compute node (see "Cluster / multiple machines" in the README). Auto-generated on the first
+# run if left unset -- copy the generated value into each agent's own agent-config.yaml.
+cluster_token: null

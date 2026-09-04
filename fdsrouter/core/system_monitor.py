@@ -45,7 +45,7 @@ def _sample() -> dict[str, Any]:
     }
 
 
-async def poll_loop(config: Config, state: SystemState, broadcast: Broadcast) -> None:
+async def poll_loop(config: Config, state: SystemState, broadcast: Broadcast, node_id: str) -> None:
     psutil.cpu_percent(percpu=True)  # prime the delta-based counter
     try:
         while True:
@@ -59,7 +59,9 @@ async def poll_loop(config: Config, state: SystemState, broadcast: Broadcast) ->
                 # showing a bare dash that looks like a broken readout.
                 snapshot["fan_status"] = fan.reason
                 state.latest = snapshot
-                await broadcast({"type": "system_metrics", **snapshot})
+                # node_id lets a multi-node browser session tell whose readouts these are --
+                # a single-node install just always sees the one id.
+                await broadcast({"type": "system_metrics", "node_id": node_id, **snapshot})
             except Exception:
                 logger.exception("system monitor sample failed")
     except asyncio.CancelledError:

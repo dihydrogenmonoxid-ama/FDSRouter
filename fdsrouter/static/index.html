@@ -66,7 +66,15 @@
     </div>
 
     <div class="column">
-      <!-- Always-on system panel (independent of any job) -->
+      <!-- Only shown once a second node has ever registered -- a solo install looks exactly as
+           it did before clustering existed. -->
+      <section class="panel" id="node-list-panel" hidden>
+        <div class="panel-head"><h2 data-i18n="clusterNodesTitle">Nodes</h2></div>
+        <div class="panel-body"><div id="node-list"></div></div>
+      </section>
+
+      <!-- Always-on system panel (independent of any job) -- shows the Controller's own
+           machine; per-node figures for remote agents are shown in the node list above. -->
       <section class="panel">
         <div class="panel-head"><h2 data-i18n="systemPanelTitle">System</h2></div>
         <div class="panel-body">
@@ -210,6 +218,11 @@
           <div class="field">
             <label for="new-job-project" data-i18n="projectLabel">Project</label>
             <input id="new-job-project" type="text" data-i18n-placeholder="projectPlaceholder" placeholder="optional" />
+          </div>
+          <div class="field">
+            <label for="new-job-deadline" data-i18n="scheduledStopLabel">Stop by</label>
+            <input id="new-job-deadline" type="datetime-local" />
+            <span class="hint" data-i18n="scheduledStopHint">optional -- stops the run at this time regardless of progress</span>
           </div>
         </section>
 

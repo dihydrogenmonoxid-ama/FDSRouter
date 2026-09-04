@@ -33,6 +33,28 @@ def tray(args: argparse.Namespace) -> None:
     raise SystemExit(tray_module.main(base_url=args.url, project_dir=Path.cwd()))
 
 
+def agent(args: argparse.Namespace) -> None:
+    import asyncio
+    import logging
+
+    from fdsrouter import agent as agent_module
+
+    # Unlike `start` (uvicorn configures its own logging), nothing sets up a handler here by
+    # default -- without this, the agent runs completely silently on the console, including its
+    # own errors, which makes a connectivity problem invisible until someone checks the
+    # Controller for a stuck job.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs one line per request at INFO -- with a 1-2s assignment poll that's a request
+    # every couple seconds even while idle, drowning out anything FDSRouter itself logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    config = agent_module.load_agent_config(Path.cwd())
+    if args.controller_url is not None:
+        config.controller_url = args.controller_url
+    print(f"FDSRouter-Agent: verbinde mit {config.controller_url} ...")
+    asyncio.run(agent_module.run(config))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="fdsrouter")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -45,6 +67,12 @@ def main() -> None:
     tray_parser = subparsers.add_parser("tray", help="Tray-Icon im Desktop starten")
     tray_parser.add_argument("--url", default=None, help="z. B. http://127.0.0.1:8000")
     tray_parser.set_defaults(func=tray)
+
+    agent_parser = subparsers.add_parser(
+        "agent", help="Als Compute-Node an einen FDSRouter-Controller anbinden"
+    )
+    agent_parser.add_argument("--controller-url", default=None, help="z. B. http://192.168.1.10:8000")
+    agent_parser.set_defaults(func=agent)
 
     args = parser.parse_args()
     args.func(args)

@@ -58,8 +58,9 @@ verwalten wollen.
   Neustart, Update und Beenden; startet mit der Sitzung
 - **Zweisprachige Oberfläche** — Englisch als Voreinstellung, Deutsch über die Einstellungen
   umschaltbar (die Wahl wird im Browser gemerkt); helles und dunkles Farbschema
-- **Mehrknotenfähiges Datenmodell** — v1 nutzt nur den lokalen Rechner, das Node-Registrierungs-
-  und Heartbeat-Schema ist aber bereits vorhanden, um später weitere Compute-Nodes anzubinden
+- **Cluster aus mehreren Rechnern** — weitere Linux-/macOS-Rechner lassen sich per
+  `fdsrouter agent` als Compute-Nodes anbinden; ein Scheduler verteilt wartende Jobs automatisch
+  auf den nächsten freien, passenden Knoten (siehe [Cluster / mehrere Rechner](#cluster--mehrere-rechner))
 
 ## Voraussetzungen
 
@@ -239,6 +240,7 @@ installationsspezifisch und wird bewusst nicht mit versioniert.
 | `upload_dir`            | Ablageort hochgeladener Fälle (je Upload ein Unterverzeichnis)      |
 | `max_upload_mb`         | Obergrenze für einen Upload in MB                                   |
 | `temperature_enabled`   | Temperaturanzeige an/aus (auf macOS ohne `sudo` meist ohnehin leer) |
+| `cluster_token`         | Geteiltes Geheimnis für Compute-Nodes (`fdsrouter agent`), automatisch erzeugt — siehe [Cluster / mehrere Rechner](#cluster--mehrere-rechner) |
 
 Energie- und Home-Assistant-Einstellungen ändern sich im laufenden Betrieb und werden deshalb
 nicht in `config.yaml`, sondern über den Einstellungsdialog der Oberfläche gepflegt.
@@ -275,10 +277,11 @@ das kommt später über „Ergebnisse" an der Job-Karte als ZIP zurück. Zwei Fe
 
 Die Zeile darunter zeigt vorab den vollständigen Pfad, der angelegt wird.
 
-**FDSRouter hat noch keine Benutzerverwaltung.** Wer die Oberfläche erreicht, darf Jobs
-einreihen und beenden — und über den Einstellungsdialog den Dienst neu starten, aktualisieren
-oder beenden. Der Dienst gehört daher ausschließlich in ein vertrauenswürdiges Netz, nicht ans
-offene Internet.
+**Zugriff.** Solange kein Konto angelegt wurde, ist die Oberfläche offen — jede Person, die sie
+erreicht, darf Jobs einreihen und beenden und den Dienst steuern. Sobald das erste Konto über
+den Anmeldebildschirm angelegt wurde, verlangt FDSRouter dauerhaft eine Anmeldung; es gibt
+weiterhin kein Rollen-/Rechtesystem, jedes Konto darf alles. Der Dienst gehört unabhängig davon
+ausschließlich in ein vertrauenswürdiges Netz, nicht ans offene Internet.
 
 ### Oberfläche ist vom Arbeitsplatz nicht erreichbar
 
@@ -319,6 +322,49 @@ sensors                      # zeigt an, was danach lesbar ist
 Findet `sensors` keine Lüfter, stellt die Hardware bzw. das Board sie nicht bereit (bei vielen
 Servern und in virtuellen Maschinen normal). Die Kernfunktionen hängen nicht daran; der Grund
 steht als Tooltip an der Anzeige.
+
+## Cluster / mehrere Rechner
+
+Ein FDSRouter-Rechner (der „Controller") kann weitere Linux-/macOS-Rechner als Compute-Nodes
+anbinden. Die Warteschlange bleibt dabei eine einzige, globale Liste — beim Einreihen wird kein
+Zielrechner gewählt; ein einfacher Scheduler weist jeden wartenden Job automatisch dem nächsten
+freien Knoten zu, dessen Kernanzahl zur gewählten MPI-Prozesszahl passt.
+
+Auf jedem weiteren Rechner:
+
+```bash
+git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
+cd FDSRouter
+python3 -m venv .venv && .venv/bin/pip install -e .
+mkdir compute-node && cd compute-node
+../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
+```
+
+Der erste Start legt `agent-config.yaml` an (Vorlage, `fds_binary`/`mpi_executable` werden wie
+beim Controller automatisch über `PATH` gesucht) und beendet sich sofort wieder — `cluster_token`
+darin ist noch leer. Der Wert steht bereits fertig in der `config.yaml` **des Controllers**
+(dort beim allerersten Start automatisch erzeugt); ihn unverändert in die `agent-config.yaml`
+jedes Compute-Node übertragen und den Agent erneut starten:
+
+```bash
+grep '^cluster_token' /pfad/zum/controller/config.yaml
+../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
+```
+
+Verbindet sich der Agent, erscheint der Knoten in der Oberfläche unter „System" (sobald mehr als
+ein Knoten bekannt ist, zeigt ein zusätzlicher Bereich alle Knoten mit Status und laufendem Job).
+Fallendateien gelangen als ZIP über den Controller zum jeweiligen Knoten und Ergebnisse ebenso
+zurück — es ist kein gemeinsames Netzlaufwerk nötig, nur eine Netzwerkverbindung vom Compute-Node
+zum Controller (der Agent fragt selbst beim Controller nach, keine eingehende Firewall-Freigabe
+auf dem Compute-Node nötig).
+
+„Automatisch fortsetzen" bzw. der Start-Knopf gelten weiterhin knotenübergreifend: ein einem
+Knoten zugewiesener Job startet dort nur, wenn die Warteschlange automatisch fortgesetzt wird
+oder er einzeln gestartet wurde — genau wie bei einem lokalen Lauf.
+
+Für den Dauerbetrieb auf einem Compute-Node bietet sich ein eigener systemd-Service analog zu
+`fdsrouter start` an (siehe [Autostart](#autostart-systemd)), nur mit `fdsrouter agent` als
+`ExecStart`.
 
 ## Tests
 
