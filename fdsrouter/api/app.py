@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import platform
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,8 +27,8 @@ from fdsrouter.api import (
 )
 from fdsrouter.api.routes_auth import SESSION_COOKIE
 from fdsrouter.api.ws import ConnectionManager
-from fdsrouter.config import Config
-from fdsrouter.core import auth, external_jobs, system_monitor
+from fdsrouter.config import LOOPBACK_HOSTS, Config
+from fdsrouter.core import auth, discovery, external_jobs, system_monitor
 from fdsrouter.core.queue_manager import QueueManager
 from fdsrouter.db.database import Database
 
@@ -77,7 +78,7 @@ def create_app(config: Config) -> FastAPI:
         app.state.queue_manager = queue_manager
         app.state.system_state = system_state
 
-        if config.trusted_proxy_header and config.host not in ("127.0.0.1", "localhost", "::1"):
+        if config.trusted_proxy_header and config.host not in LOOPBACK_HOSTS:
             logger.warning(
                 "trusted_proxy_header is set to %r while the service listens on %s (not "
                 "loopback-only) -- any client that can reach this port can impersonate any "
@@ -98,11 +99,34 @@ def create_app(config: Config) -> FastAPI:
         external_task = asyncio.create_task(
             external_jobs.poll_loop(config, queue_manager, ws_manager.broadcast)
         )
+        discovery_stop = threading.Event()
+        discovery_thread: threading.Thread | None = None
+        if config.discovery_enabled and config.host not in LOOPBACK_HOSTS:
+            # Answering LAN discovery only makes sense once the HTTP server itself is actually
+            # reachable from the network -- a loopback-only Controller (the default) would
+            # otherwise get "discovered" at its real interface IP by another machine's agent
+            # setup, which then fails to connect at all, appearing broken for a reason that has
+            # nothing to do with discovery. See README's "Betrieb im Netzwerk" for the host:
+            # "0.0.0.0" step this still requires.
+            discovery_thread = threading.Thread(
+                target=discovery.run_discovery_responder, args=(config.port, discovery_stop), daemon=True
+            )
+            discovery_thread.start()
+        elif config.discovery_enabled:
+            logger.info(
+                "auto-discovery not started: host is %s (loopback-only), so this Controller "
+                "would not be reachable from another machine's agent even if discovered. Set "
+                "host: \"0.0.0.0\" in config.yaml to allow both network access and discovery.",
+                config.host,
+            )
         try:
             yield
         finally:
             system_task.cancel()
             external_task.cancel()
+            discovery_stop.set()
+            if discovery_thread is not None:
+                discovery_thread.join(timeout=2)
             await queue_manager.stop()
 
     app = FastAPI(title="FDSRouter", lifespan=lifespan)

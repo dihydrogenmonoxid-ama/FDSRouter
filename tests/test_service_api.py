@@ -38,6 +38,27 @@ def test_status_reports_whether_the_service_can_be_controlled(client):
     assert payload["controllable"] is (payload["reason"] is None)
 
 
+def test_cluster_info_exposes_what_an_agent_needs_to_pair(client):
+    payload = client.get("/api/service/cluster-info").json()
+
+    assert set(payload) == {"hostname", "port", "cluster_token", "lan_reachable", "discovery_active"}
+    assert payload["cluster_token"] == client.app.state.config.cluster_token
+    assert payload["port"] == client.app.state.config.port
+    # The default Config() fixture binds to loopback -- discovery can never actually help there.
+    assert payload["lan_reachable"] is False
+    assert payload["discovery_active"] is False
+
+
+def test_cluster_info_reports_lan_reachable_once_host_is_not_loopback(tmp_path):
+    config = Config(project_dir=tmp_path, host="0.0.0.0")
+    config.resolved_data_dir.mkdir(parents=True, exist_ok=True)
+    with TestClient(create_app(config)) as test_client:
+        payload = test_client.get("/api/service/cluster-info").json()
+
+    assert payload["lan_reachable"] is True
+    assert payload["discovery_active"] is True
+
+
 def test_restart_and_stop_are_refused_while_a_job_is_running(client, recorded_calls):
     _pretend_job_is_running(client)
 

@@ -99,7 +99,25 @@ def load_agent_config(project_dir: Path) -> AgentConfig:
     return cfg
 
 
-def _local_node_id(config: AgentConfig) -> str:
+def save_agent_config(config: AgentConfig) -> None:
+    """Persist controller_url/cluster_token back to agent-config.yaml after interactive pairing
+    (see cli.py) -- so a later `fdsrouter agent` start doesn't have to discover/prompt again."""
+    config_path = config.project_dir / CONFIG_FILENAME
+    data = {
+        "controller_url": config.controller_url,
+        "cluster_token": config.cluster_token,
+        "fds_binary": config.fds_binary,
+        "mpi_executable": config.mpi_executable,
+        "mpi_command_template": config.mpi_command_template,
+        "default_mpi_processes": config.default_mpi_processes,
+        "data_dir": str(config.data_dir),
+    }
+    with config_path.open("w", encoding="utf-8") as f:
+        f.write("# Written by fdsrouter agent's interactive pairing setup.\n")
+        yaml.safe_dump(data, f, sort_keys=False)
+
+
+def local_node_id(config: AgentConfig) -> str:
     """Same stable-id-persisted-to-a-file convention as the Controller's own _local_node_id."""
     id_file = config.resolved_data_dir / "node_id.txt"
     if id_file.exists():
@@ -109,12 +127,28 @@ def _local_node_id(config: AgentConfig) -> str:
     return node_id
 
 
+def registration_payload(config: AgentConfig, node_id: str) -> dict:
+    """Shared between Agent.register() and the interactive pairing step in cli.py -- the latter
+    makes its own one-off synchronous call to verify a freshly entered token before saving it,
+    and must describe this machine identically to how the running agent later will."""
+    return {
+        "id": node_id,
+        "hostname": platform.node(),
+        "os": platform.system(),
+        # Physical cores, matching the Controller's own registration -- FDS's MPI-per-mesh model
+        # doesn't benefit from hyperthreading.
+        "cpu_cores": psutil.cpu_count(logical=False) or psutil.cpu_count(logical=True) or 1,
+        "ram_total_mb": int(psutil.virtual_memory().total / (1024 * 1024)),
+        "fds_ready": bool(config.fds_binary and config.mpi_executable),
+    }
+
+
 class Agent:
     def __init__(self, config: AgentConfig, transport: httpx.AsyncBaseTransport | None = None):
         # transport is exposed purely for tests -- an in-process httpx.ASGITransport driving a
         # real Controller app without a real socket. Real runs always use the default (None).
         self.config = config
-        self.node_id = _local_node_id(config)
+        self.node_id = local_node_id(config)
         self.client = httpx.AsyncClient(
             base_url=config.controller_url,
             headers={"Authorization": f"Bearer {config.cluster_token}"},
@@ -128,19 +162,11 @@ class Agent:
         await self.client.aclose()
 
     async def register(self) -> None:
-        await self.client.post(
-            "/api/agent/register",
-            json={
-                "id": self.node_id,
-                "hostname": platform.node(),
-                "os": platform.system(),
-                # Physical cores, matching the Controller's own registration -- FDS's
-                # MPI-per-mesh model doesn't benefit from hyperthreading.
-                "cpu_cores": psutil.cpu_count(logical=False) or psutil.cpu_count(logical=True) or 1,
-                "ram_total_mb": int(psutil.virtual_memory().total / (1024 * 1024)),
-                "fds_ready": bool(self.config.fds_binary and self.config.mpi_executable),
-            },
-        )
+        # raise_for_status matters here specifically: a wrong/stale cluster_token must stop the
+        # agent loudly at startup rather than have it limp along issuing heartbeats and
+        # assignment polls that will all 401 silently forever.
+        resp = await self.client.post("/api/agent/register", json=registration_payload(self.config, self.node_id))
+        resp.raise_for_status()
 
     async def heartbeat_loop(self) -> None:
         while True:

@@ -625,7 +625,50 @@ function closeSettingsModal() {
 
 function openOperationsModal() {
   loadServiceStatus();
+  loadClusterInfo();
   el("operations-overlay").hidden = false;
+}
+
+/** What another machine's `fdsrouter agent` setup needs -- shown so the operator can read the
+ *  token off the screen instead of grepping config.yaml on the server. */
+async function loadClusterInfo() {
+  el("cluster-address").textContent = "–";
+  el("cluster-token").textContent = "–";
+  el("cluster-warning").hidden = true;
+  try {
+    const info = await apiGet("/api/service/cluster-info");
+    el("cluster-address").textContent = `${info.hostname}:${info.port}`;
+    el("cluster-token").textContent = info.cluster_token || t("unknownValue");
+    // Two different problems look the same from "an agent can't find me" -- but need different
+    // fixes, so they get different messages: not reachable at all (fix: host: "0.0.0.0") vs.
+    // reachable but discovery specifically turned off (fix: discovery_enabled: true).
+    if (!info.lan_reachable) {
+      el("cluster-warning").hidden = false;
+      el("cluster-warning-text").textContent = t("clusterNotLanReachableHint");
+    } else if (!info.discovery_active) {
+      el("cluster-warning").hidden = false;
+      el("cluster-warning-text").textContent = t("clusterDiscoveryOffHint");
+    }
+  } catch (e) {
+    // best effort only -- the rest of the Operations dialog stays usable
+  }
+}
+
+async function copyClusterToken() {
+  const button = el("cluster-token-copy");
+  const token = el("cluster-token").textContent;
+  const restore = () => setTimeout(() => (button.textContent = t("copyLog")), 1500);
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(token);
+    } else if (!copyViaTextarea(token)) {
+      throw new Error("execCommand copy rejected");
+    }
+    button.textContent = t("copyLogDone");
+  } catch (e) {
+    button.textContent = t("copyLogFailed");
+  }
+  restore();
 }
 
 function closeOperationsModal() {
@@ -2690,6 +2733,7 @@ el("login-password").addEventListener("keydown", (ev) => {
 el("logout-btn").addEventListener("click", logout);
 
 el("operations-btn").addEventListener("click", openOperationsModal);
+el("cluster-token-copy").addEventListener("click", copyClusterToken);
 el("operations-close").addEventListener("click", closeOperationsModal);
 el("operations-overlay").addEventListener("click", (ev) => {
   if (ev.target === el("operations-overlay")) closeOperationsModal();

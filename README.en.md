@@ -327,6 +327,10 @@ nodes. The queue stays a single global list — no target machine is picked when
 enqueued; a simple scheduler automatically hands each waiting job to the next free node whose
 core count fits the chosen MPI process count.
 
+Prerequisite: the Controller must actually be reachable on the network (`host: "0.0.0.0"`, see
+[Running it on the network](#running-it-on-the-network)) — otherwise a compute node may still
+*find* it via discovery but won't be able to actually connect.
+
 On each additional machine:
 
 ```bash
@@ -334,25 +338,30 @@ git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
 cd FDSRouter
 python3 -m venv .venv && .venv/bin/pip install -e .
 mkdir compute-node && cd compute-node
-../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
+../.venv/bin/fdsrouter agent
 ```
 
-The first start creates `agent-config.yaml` (template; `fds_binary`/`mpi_executable` are
-auto-detected via `PATH` just like on the Controller) and exits right away — `cluster_token` in
-it is still empty. That value already sits in the **Controller's** own `config.yaml`
-(auto-generated on its very first start); copy it unchanged into every compute node's
-`agent-config.yaml` and start the agent again:
+The first start looks for the Controller on the local network automatically (a UDP broadcast, no
+IP to type in) and lists every Controller it finds to choose from; if none answer, it asks for
+the address instead. Then it just asks for the **cluster token** — shown on the Controller under
+"Operations" → "Cluster" (with a copy button). The token is verified against the Controller
+immediately, so a typo is caught right there instead of three retries into a background poll
+loop nobody is watching. Once paired, `agent-config.yaml` is written and every later start
+connects directly without asking again. If the Controller isn't on the same network segment, or
+`discovery_enabled: false` turns discovery off there, the address can still be given manually:
 
 ```bash
-grep '^cluster_token' /path/to/controller/config.yaml
 ../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
 ```
 
-Once connected, the node shows up in the interface under "System" (once more than one node is
-known, an additional section lists every node with its status and current job). Case files
-travel to and from the node as a ZIP through the Controller — no shared network drive is
-needed, only a network path from the compute node to the Controller (the agent polls the
-Controller itself, so no inbound firewall rule is needed on the compute node).
+To redo the setup against a different Controller, `fdsrouter agent --pair` runs it again.
+
+Once connected, the node shows up in the interface under "Nodes" (listing every known machine
+with its status, cores/RAM and current job — including the Controller itself). Case files travel
+to and from the node as a ZIP through the Controller — no shared network drive is needed, only a
+network path from the compute node to the Controller (the agent polls the Controller itself, so
+no inbound firewall rule is needed on the compute node; the one-time network search additionally
+uses a UDP broadcast on port 57632 that reveals only hostname and port -- never the token).
 
 "Auto-continue" and the per-job Start button still apply across nodes: a job assigned to a node
 only starts there once the queue is set to auto-continue, or that job was started individually —

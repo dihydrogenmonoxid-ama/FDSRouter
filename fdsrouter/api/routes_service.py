@@ -7,9 +7,12 @@ running unless the caller explicitly confirms.
 
 from __future__ import annotations
 
+import platform
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from fdsrouter.config import LOOPBACK_HOSTS
 from fdsrouter.core import service_control
 
 router = APIRouter(prefix="/api/service", tags=["service"])
@@ -36,6 +39,24 @@ def _actor(request: Request) -> str | None:
 @router.get("")
 def get_service_status() -> dict:
     return service_control.status()
+
+
+@router.get("/cluster-info")
+def get_cluster_info(request: Request) -> dict:
+    """What another machine's `fdsrouter agent` setup needs to pair with this Controller --
+    shown in the Operations dialog so the operator doesn't have to grep config.yaml by hand.
+    Session-authenticated like the rest of /api/service, since cluster_token is a secret."""
+    config = request.app.state.config
+    lan_reachable = config.host not in LOOPBACK_HOSTS
+    return {
+        "hostname": platform.node(),
+        "port": config.port,
+        "cluster_token": config.cluster_token,
+        "lan_reachable": lan_reachable,
+        # What actually determines whether an agent's discovery broadcast gets an answer --
+        # discovery_enabled alone isn't enough, see app.py's lifespan.
+        "discovery_active": config.discovery_enabled and lan_reachable,
+    }
 
 
 @router.post("/restart")

@@ -330,6 +330,10 @@ anbinden. Die Warteschlange bleibt dabei eine einzige, globale Liste — beim Ei
 Zielrechner gewählt; ein einfacher Scheduler weist jeden wartenden Job automatisch dem nächsten
 freien Knoten zu, dessen Kernanzahl zur gewählten MPI-Prozesszahl passt.
 
+Voraussetzung: der Controller muss im Netz erreichbar sein (`host: "0.0.0.0"`, siehe
+[Betrieb im Netzwerk](#betrieb-im-netzwerk)) — sonst findet ein Compute-Node ihn zwar
+möglicherweise per Suche, kann sich aber nicht wirklich verbinden.
+
 Auf jedem weiteren Rechner:
 
 ```bash
@@ -337,26 +341,33 @@ git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
 cd FDSRouter
 python3 -m venv .venv && .venv/bin/pip install -e .
 mkdir compute-node && cd compute-node
-../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
+../.venv/bin/fdsrouter agent
 ```
 
-Der erste Start legt `agent-config.yaml` an (Vorlage, `fds_binary`/`mpi_executable` werden wie
-beim Controller automatisch über `PATH` gesucht) und beendet sich sofort wieder — `cluster_token`
-darin ist noch leer. Der Wert steht bereits fertig in der `config.yaml` **des Controllers**
-(dort beim allerersten Start automatisch erzeugt); ihn unverändert in die `agent-config.yaml`
-jedes Compute-Node übertragen und den Agent erneut starten:
+Der erste Start sucht den Controller automatisch im lokalen Netz (UDP-Broadcast, kein manuelles
+Eintragen einer IP nötig) und listet alle gefundenen Controller zur Auswahl auf; wird keiner
+gefunden, fragt er stattdessen nach der Adresse. Anschließend nur noch das **Cluster-Token**
+eingeben — es steht auf dem Controller unter „Betrieb" → „Cluster" (dort auch zum Kopieren). Das
+Token wird sofort gegen den Controller geprüft; bei einem Tippfehler fragt der Assistent erneut.
+Nach erfolgreicher Einrichtung ist `agent-config.yaml` geschrieben, und jeder weitere Start
+verbindet sich direkt, ohne erneut zu fragen. Läuft der Controller nicht im selben
+Netzsegment oder ist die Suche dort per `discovery_enabled: false` abgeschaltet, lässt sich die
+Adresse weiterhin manuell angeben:
 
 ```bash
-grep '^cluster_token' /pfad/zum/controller/config.yaml
 ../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
 ```
 
-Verbindet sich der Agent, erscheint der Knoten in der Oberfläche unter „System" (sobald mehr als
-ein Knoten bekannt ist, zeigt ein zusätzlicher Bereich alle Knoten mit Status und laufendem Job).
-Fallendateien gelangen als ZIP über den Controller zum jeweiligen Knoten und Ergebnisse ebenso
-zurück — es ist kein gemeinsames Netzlaufwerk nötig, nur eine Netzwerkverbindung vom Compute-Node
-zum Controller (der Agent fragt selbst beim Controller nach, keine eingehende Firewall-Freigabe
-auf dem Compute-Node nötig).
+Um die Einrichtung mit einem geänderten Controller erneut zu durchlaufen, hilft `fdsrouter agent
+--pair`.
+
+Verbindet sich der Agent, erscheint der Knoten in der Oberfläche unter „Knoten" (die Übersicht
+zeigt jeden bekannten Rechner mit Status, Kernen/RAM und laufendem Job — auch den Controller
+selbst). Fallendateien gelangen als ZIP über den Controller zum jeweiligen Knoten und Ergebnisse
+ebenso zurück — es ist kein gemeinsames Netzlaufwerk nötig, nur eine Netzwerkverbindung vom
+Compute-Node zum Controller (der Agent fragt selbst beim Controller nach, keine eingehende
+Firewall-Freigabe auf dem Compute-Node nötig; die einmalige Netzwerksuche nutzt zusätzlich einen
+UDP-Broadcast auf Port 57632, der ausschließlich Rechnername und Port verrät — nie das Token).
 
 „Automatisch fortsetzen" bzw. der Start-Knopf gelten weiterhin knotenübergreifend: ein einem
 Knoten zugewiesener Job startet dort nur, wenn die Warteschlange automatisch fortgesetzt wird

@@ -49,5 +49,12 @@ trusted_proxy_header: null
 
 # Shared secret a remote `fdsrouter agent` process presents to join this Controller as a
 # compute node (see "Cluster / multiple machines" in the README). Auto-generated on the first
-# run if left unset -- copy the generated value into each agent's own agent-config.yaml.
+# run if left unset -- shown on the Controller under Operations -> Cluster, and asked for
+# automatically by `fdsrouter agent`'s first-run pairing setup.
 cluster_token: null
+
+# Answers a UDP broadcast on the local network so `fdsrouter agent`'s pairing setup can find
+# this Controller without the operator typing an IP -- reveals only hostname/port, never
+# cluster_token. Only takes effect once host is not loopback-only (see above); has no effect on
+# a Controller bound to 127.0.0.1, since it wouldn't be reachable from another machine anyway.
+discovery_enabled: true

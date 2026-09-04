@@ -12,6 +12,9 @@ import yaml
 DEFAULT_MPI_COMMAND_TEMPLATE = ["{mpi_exec}", "-n", "{n_processes}", "{fds_binary}", "{fds_file}"]
 
 CONFIG_FILENAME = "config.yaml"
+# Hostnames that mean "this machine only" -- used wherever a feature (trusted_proxy_header,
+# discovery) must behave differently once the Controller is actually reachable from the network.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 @dataclass
@@ -41,6 +44,11 @@ class Config:
     # no per-node token/pairing flow, matching the project's "vertrauenswürdiges Netz" model
     # (see api/app.py's auth_gate for the /api/agent/* check).
     cluster_token: str | None = None
+    # Answers LAN broadcast pings so `fdsrouter agent`'s interactive setup can find this
+    # Controller without the operator typing an IP -- reveals only hostname/port, never
+    # cluster_token (see core/discovery.py). On by default: unlike trusted_proxy_header, there
+    # is nothing here an attacker could actually use.
+    discovery_enabled: bool = True
 
     @property
     def db_path(self) -> Path:
@@ -77,6 +85,7 @@ def _write_default_config(path: Path) -> dict:
         "max_upload_mb": 512,
         "trusted_proxy_header": None,
         "cluster_token": secrets.token_urlsafe(32),
+        "discovery_enabled": True,
     }
     with path.open("w", encoding="utf-8") as f:
         f.write(
@@ -119,6 +128,7 @@ def load_config(project_dir: Path) -> Config:
     cfg.max_upload_mb = int(raw.get("max_upload_mb", 512))
     cfg.trusted_proxy_header = raw.get("trusted_proxy_header") or None
     cfg.cluster_token = raw.get("cluster_token") or None
+    cfg.discovery_enabled = bool(raw.get("discovery_enabled", True))
 
     cfg.resolved_data_dir.mkdir(parents=True, exist_ok=True)
     return cfg

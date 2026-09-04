@@ -238,6 +238,13 @@ const STRINGS = {
     serviceBlockedByJob: "Es läuft gerade ein Job — Aktion abgebrochen.",
     serviceActionFailed: "Fehlgeschlagen: {error}",
 
+    clusterInfoTitle: "Cluster",
+    clusterInfoIntro: "Ein zweiter Rechner tritt als Compute-Node über „fdsrouter agent“ bei -- dessen Einrichtung findet diesen Controller im Netzwerk von selbst und fragt nur noch nach dem Token unten.",
+    clusterInfoAddressLabel: "Adresse",
+    clusterInfoTokenLabel: "Cluster-Token",
+    clusterDiscoveryOffHint: "Netzwerksuche ist auf diesem Controller ausgeschaltet (discovery_enabled: false) -- die Agent-Einrichtung fragt dann nach der Adresse oben.",
+    clusterNotLanReachableHint: "Dieser Controller ist nur lokal erreichbar (host: 127.0.0.1). Für host: \"0.0.0.0\" in config.yaml setzen, damit andere Rechner sich verbinden und finden können.",
+
     logout: "Abmelden",
     loginTitle: "Anmelden",
     loginIntro: "Bitte anmelden, um FDSRouter zu nutzen.",
@@ -558,6 +565,13 @@ const STRINGS = {
     serviceUpdateNoChange: "Already up to date ({revision}).",
     serviceBlockedByJob: "A job is running — action cancelled.",
     serviceActionFailed: "Failed: {error}",
+
+    clusterInfoTitle: "Cluster",
+    clusterInfoIntro: "A second machine joins as a compute node via `fdsrouter agent` -- its setup finds this Controller on the network by itself and only asks for the token below.",
+    clusterInfoAddressLabel: "Address",
+    clusterInfoTokenLabel: "Cluster token",
+    clusterDiscoveryOffHint: "Network discovery is switched off on this Controller (discovery_enabled: false) -- the agent setup will ask for the address above manually.",
+    clusterNotLanReachableHint: "This Controller is reachable from this machine only (host: 127.0.0.1). Set host: \"0.0.0.0\" in config.yaml so other machines can connect and find it.",
 
     logout: "Log out",
     loginTitle: "Log in",

@@ -411,6 +411,22 @@
           <label></label>
           <span id="service-result" class="hint"></span>
         </div>
+
+        <div class="sub-head" data-i18n="clusterInfoTitle">Cluster</div>
+        <p class="hint" data-i18n="clusterInfoIntro">A second machine joins as a compute node via `fdsrouter agent` -- its setup finds this Controller on the network by itself and only asks for the token below.</p>
+        <div class="field">
+          <label data-i18n="clusterInfoAddressLabel">Address</label>
+          <span id="cluster-address" class="hint mono">–</span>
+        </div>
+        <div class="field">
+          <label data-i18n="clusterInfoTokenLabel">Cluster token</label>
+          <span id="cluster-token" class="hint mono">–</span>
+          <button id="cluster-token-copy" class="secondary small" data-i18n="copyLog">Copy</button>
+        </div>
+        <div class="field" id="cluster-warning" hidden>
+          <label></label>
+          <span id="cluster-warning-text" class="hint"></span>
+        </div>
       </div>
       <div class="dialog-actions">
         <button id="operations-close" class="secondary" data-i18n="close">Close</button>

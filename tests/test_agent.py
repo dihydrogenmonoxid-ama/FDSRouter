@@ -92,3 +92,39 @@ def test_load_agent_config_writes_and_reloads(tmp_path):
     cfg2 = load_agent_config(tmp_path)
     assert cfg2.controller_url == "http://10.0.0.5:8000"
     assert cfg2.cluster_token == "abc123"
+
+
+def test_save_agent_config_round_trips(tmp_path):
+    from fdsrouter.agent import load_agent_config, save_agent_config
+
+    cfg = load_agent_config(tmp_path)
+    cfg.controller_url = "http://192.168.1.10:8000"
+    cfg.cluster_token = "paired-token"
+
+    save_agent_config(cfg)
+
+    reloaded = load_agent_config(tmp_path)
+    assert reloaded.controller_url == "http://192.168.1.10:8000"
+    assert reloaded.cluster_token == "paired-token"
+
+
+def test_register_raises_on_a_bad_token(controller_config, tmp_path):
+    async def scenario():
+        app = create_app(controller_config)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            agent_config = AgentConfig(
+                project_dir=tmp_path / "agent",
+                controller_url="http://testserver",
+                cluster_token="wrong-token",
+                data_dir=tmp_path / "agent" / "data",
+            )
+            agent_config.resolved_data_dir.mkdir(parents=True, exist_ok=True)
+            agent = Agent(agent_config, transport=transport)
+            try:
+                with pytest.raises(httpx.HTTPStatusError):
+                    await agent.register()
+            finally:
+                await agent.aclose()
+
+    asyncio.run(scenario())
