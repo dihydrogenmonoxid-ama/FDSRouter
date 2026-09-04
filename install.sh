@@ -172,9 +172,16 @@ ok "$PYTHON_BIN (Version $(python_version "$PYTHON_BIN"))"
 # --------------------------------------------------------------------------------------
 
 info "Virtuelle Umgebung anlegen"
-if [ -x "$VENV_DIR/bin/python" ]; then
+# A venv left behind by a failed `python3 -m venv` has pyvenv.cfg and the interpreter symlinks
+# but no pip, so require both markers before reusing the directory.
+if [ -f "$VENV_DIR/pyvenv.cfg" ] && [ -x "$VENV_DIR/bin/python" ] \
+   && "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
     ok "vorhanden: $VENV_DIR"
 else
+    if [ -e "$VENV_DIR" ]; then
+        warn "Unvollstaendige Umgebung gefunden -- wird neu angelegt: $VENV_DIR"
+        rm -rf "$VENV_DIR"
+    fi
     "$PYTHON_BIN" -m venv "$VENV_DIR" || die "venv konnte nicht angelegt werden."
     ok "angelegt: $VENV_DIR"
 fi
