@@ -12,6 +12,10 @@ const state = {
   lastSimTime: null,
   // Last .out sample, so a rebuilt job card can be refilled without waiting for the next one.
   lastOut: null,
+  // Recent time step sizes and the anomalies derived from them; a collapsing time step is the
+  // earliest visible sign that a run is in trouble.
+  stepSizes: [],
+  anomalies: [],
   expandedHistoryIds: new Set(),
   jobMetricsCache: new Map(),
   autoAdvance: false,
@@ -174,6 +178,7 @@ function openNewJobModal() {
   el("upload-btn").disabled = true;
   el("upload-status").textContent = t("uploadHint");
   el("upload-folder-name").value = "";
+  renderCaseFindings([]);
   updateWorkingDirStep();
   el("new-job-overlay").hidden = false;
   loadUploadRoot();
@@ -251,11 +256,36 @@ async function selectFile(path, liEl = null, fromUpload = false) {
     mpiInput.max = info.mesh_count || 9999;
     el("mpi-hint").textContent = info.mesh_count ? t("mpiProcessesHint", { max: info.mesh_count }) : "";
 
+    renderCaseFindings(info.findings || []);
     el("mpi-row").hidden = false;
     el("new-job-submit").disabled = false;
   } catch (e) {
     el("selected-file-info").textContent = e.message;
+    renderCaseFindings([]);
   }
+}
+
+/** The pre-flight report: what will go wrong before the case is ever started.
+ *
+ *  Errors do not block enqueueing -- the operator may be about to fix the file, or may know
+ *  something the check does not -- but the primary button says what it is doing then. */
+function renderCaseFindings(findings) {
+  const list = el("case-findings");
+  list.innerHTML = "";
+  list.hidden = findings.length === 0;
+
+  for (const finding of findings) {
+    const li = document.createElement("li");
+    li.className = `finding ${finding.level}`;
+    const text = t(`check_${finding.code}`, { detail: finding.detail || "" });
+    li.innerHTML = `<span class="finding-level">${esc(t(`checkLevel_${finding.level}`))}</span><span>${esc(text)}</span>`;
+    list.appendChild(li);
+  }
+
+  const hasError = findings.some((f) => f.level === "error");
+  const submit = el("new-job-submit");
+  submit.textContent = hasError ? t("enqueueAnyway") : t("enqueue");
+  submit.classList.toggle("danger", hasError);
 }
 
 /** Step 2 has two truths: for an uploaded case the operator picks the working directory, for a
@@ -999,6 +1029,7 @@ function renderJobs() {
     // The card was just rebuilt from scratch; without this every live readout would fall back
     // to its placeholder until the next sample arrives.
     if (state.lastOut) applyLiveOut(state.lastOut);
+    renderAnomalies();
     if (state.lastSimTime != null) updateProgress(state.lastSimTime);
   }
 
@@ -1055,6 +1086,7 @@ function renderRunningCard(job) {
       cells: job.mesh_cell_count ?? t("unknownValue"),
     }))}</div>
     <div class="verdict" id="run-verdict">${esc(t("verdictStarting"))}</div>
+    <div class="anomalies" id="run-anomalies"></div>
     <div class="live-row">
       <span class="live-item"><span class="k">${t("liveElapsed")}</span><span class="v" id="run-elapsed">–</span></span>
       <span class="live-item"><span class="k">${t("liveRemaining")}</span><span class="v" id="run-remaining">–</span></span>
@@ -1157,12 +1189,17 @@ function renderHistoryCard(job) {
       ${renderStatus(job.status)}
     </div>
     <div class="job-meta">${esc(t("jobMetaDone", { duration: fmtDuration(job.actual_duration_s) }))}${
-      job.exit_message ? " · " + esc(job.exit_message) : ""
-    }${
       job.archived_at
         ? " · " + esc(t("archivedMeta", { date: new Date(job.archived_at).toLocaleDateString() }))
         : ""
     }</div>
+    ${job.exit_message && job.status !== "done"
+      ? `<div class="failure">
+           <div class="failure-head">${esc(t("failureTitle"))}</div>
+           <pre class="failure-message">${esc(job.exit_message)}</pre>
+           <div class="failure-hint">${esc(t("failureHint"))}</div>
+         </div>`
+      : ""}
     <div class="job-actions">
       <button class="secondary small details-toggle">${isExpanded ? t("hideDetails") : t("showDetails")}</button>
     </div>
@@ -1170,6 +1207,7 @@ function renderHistoryCard(job) {
 
   li.querySelector(".job-actions").appendChild(renderLogButton(job.id));
   li.querySelector(".job-actions").appendChild(renderResultsButton(job.id));
+  if (job.status !== "done") li.querySelector(".job-actions").appendChild(renderRequeueButton(job));
   const detailsEl = li.querySelector(".job-details");
   const toggleBtn = li.querySelector(".details-toggle");
 
@@ -1188,6 +1226,25 @@ function renderHistoryCard(job) {
   if (isExpanded) loadHistoryDetails(job, detailsEl);
 
   return li;
+}
+
+/** Queue the same case again -- the normal next step after fixing the input file. */
+function renderRequeueButton(job) {
+  const button = document.createElement("button");
+  button.className = "secondary small";
+  button.textContent = t("requeue");
+  button.onclick = async () => {
+    try {
+      await apiSend("/api/jobs", "POST", {
+        fds_file_path: job.fds_file_path,
+        name: job.name,
+        mpi_processes: job.mpi_process_count || undefined,
+      });
+    } catch (e) {
+      alert(t("requeueFailed", { error: e.message }));
+    }
+  };
+  return button;
 }
 
 async function loadHistoryDetails(job, container) {
@@ -1306,7 +1363,9 @@ function handleJobMetrics(msg) {
 
   if (msg.out) {
     state.lastOut = msg.out;
+    state.anomalies = detectAnomalies(msg.out, msg.processes || []);
     applyLiveOut(msg.out);
+    renderAnomalies();
 
     const simTime = msg.out.simulation_time_s;
     if (simTime != null && msg.out.total_hrr_kw != null) {
@@ -1337,6 +1396,49 @@ const MAX_PLOT_SAMPLES = 2000;
  *  Separate from the metrics handler because the card is rebuilt on every queue update: without
  *  re-applying the last sample, simulation time, HRR and the verdict would fall back to their
  *  placeholders for up to one polling interval. */
+const STEP_HISTORY = 12;
+const STEP_COLLAPSE_FACTOR = 0.2;
+const IDLE_PROCESS_PERCENT = 5;
+
+/** What is worth interrupting the operator about while a run is going.
+ *
+ *  Each of these is something an experienced user spots by watching the numbers: the time step
+ *  falling off a cliff (the solver is fighting something), FDS logging warnings, or an MPI
+ *  process that stopped consuming CPU while its siblings keep going.
+ */
+function detectAnomalies(out, processes) {
+  const found = [];
+
+  if (out.step_size_s != null && out.step_size_s > 0) {
+    const history = state.stepSizes;
+    if (history.length >= 6) {
+      const sorted = history.slice().sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      if (median > 0 && out.step_size_s < median * STEP_COLLAPSE_FACTOR) {
+        found.push({ code: "timestep", detail: out.step_size_s.toExponential(1) });
+      }
+    }
+    history.push(out.step_size_s);
+    if (history.length > STEP_HISTORY) history.shift();
+  }
+
+  if (out.warnings_count) found.push({ code: "warnings", detail: String(out.warnings_count) });
+
+  const idle = (processes || []).filter((p) => p.cpu_percent < IDLE_PROCESS_PERCENT);
+  if (idle.length && processes.length > 1) {
+    found.push({ code: "idleProcess", detail: idle.map((p) => p.pid).join(", ") });
+  }
+  return found;
+}
+
+function renderAnomalies() {
+  const host = el("run-anomalies");
+  if (!host) return;
+  host.innerHTML = state.anomalies
+    .map((a) => `<span class="anomaly">${esc(t(`anomaly_${a.code}`, { detail: a.detail }))}</span>`)
+    .join("");
+}
+
 function applyLiveOut(out) {
   setText("run-simtime", out.simulation_time_s != null ? out.simulation_time_s.toFixed(2) : "–");
   setText("run-hrr", out.total_hrr_kw != null ? out.total_hrr_kw.toFixed(1) : "–");
@@ -1358,12 +1460,19 @@ function renderDeviceTable(devices) {
   }
 
   const selected = state.plotSignal.kind === "devc" ? state.plotSignal.device : null;
+  const unitOf = (name) => {
+    const known = state.knownDevices.find((d) => d.name === name);
+    return known && known.unit ? known.unit : "";
+  };
   tbody.innerHTML = names
     .map((name) => {
       const classes = `pick${name === selected ? " selected" : ""}`;
+      // A reading without its unit is not a measurement -- the unit comes from the same
+      // CHID_devc.csv header row the values do.
       return (
         `<tr class="${classes}" data-device="${esc(name)}">` +
-        `<td>${esc(name)}</td><td class="n">${devices[name].toFixed(1)}</td></tr>`
+        `<td>${esc(name)}</td>` +
+        `<td class="n">${devices[name].toFixed(1)}<span class="u">${esc(unitOf(name))}</span></td></tr>`
       );
     })
     .join("");
@@ -1684,6 +1793,8 @@ async function loadJobHistoryForChart(jobId) {
   state.hrrHistory = [];
   state.deviceHistory = [];
   state.lastOut = null;
+  state.stepSizes = [];
+  state.anomalies = [];
   state.plotSignal = { kind: "hrr", device: null, unit: "kW" };
   syncPlotSignalOptions([]);
   updatePlotCaption();

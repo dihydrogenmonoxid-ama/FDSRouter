@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from fdsrouter.core.case_check import check_case_file
 from fdsrouter.core.fds_parser import (
     parse_mesh_cell_count_from_file,
     parse_mesh_count_from_file,
@@ -43,7 +44,11 @@ def list_jobs(request: Request) -> list[dict]:
 
 @router.get("/inspect")
 def inspect_fds_file(path: str, request: Request) -> dict:
-    """Mesh/T_END preview for the "Neuer Job"-modal, before the job is actually enqueued."""
+    """Mesh/T_END preview plus a pre-flight check, before the job is actually enqueued.
+
+    The findings are the point: they turn the FDS errors that would otherwise surface seconds
+    into the run -- and hours later in the history -- into something correctable right here.
+    """
     fds_file = _require_fds_file(path)
     config = request.app.state.config
     mesh_count = parse_mesh_count_from_file(fds_file)
@@ -52,6 +57,7 @@ def inspect_fds_file(path: str, request: Request) -> dict:
         "mesh_cell_count": parse_mesh_cell_count_from_file(fds_file) or None,
         "sim_end_time_s": parse_sim_end_time_s_from_file(fds_file),
         "default_mpi_processes": mesh_count or config.default_mpi_processes,
+        "findings": [f.as_dict() for f in check_case_file(fds_file)],
     }
 
 
