@@ -393,7 +393,7 @@
   </div>
 
   <div id="operations-overlay" class="overlay" hidden>
-    <div class="dialog">
+    <div class="dialog wide">
       <div class="dialog-head"><h2 data-i18n="operationsModalTitle">Operations</h2></div>
       <div class="dialog-body">
         <div class="sub-head" data-i18n="serviceSettingsTitle">Service</div>
@@ -426,6 +426,50 @@
         <div class="field" id="cluster-warning" hidden>
           <label></label>
           <span id="cluster-warning-text" class="hint"></span>
+        </div>
+
+        <div class="sub-head" data-i18n="configSectionTitle">Configuration</div>
+        <p class="hint" data-i18n="configSectionIntro">config.yaml, editable here. host/port and network discovery need a restart to take effect; everything else applies to the next run immediately.</p>
+        <div class="field">
+          <label for="config-host" data-i18n="configHostLabel">Host</label>
+          <input id="config-host" type="text" placeholder="127.0.0.1" />
+        </div>
+        <div class="field">
+          <label for="config-port" data-i18n="configPortLabel">Port</label>
+          <input id="config-port" type="number" min="1" max="65535" />
+        </div>
+        <div class="field">
+          <label for="config-open-browser" data-i18n="configOpenBrowserLabel">Open browser on start</label>
+          <input id="config-open-browser" type="checkbox" />
+        </div>
+        <div class="field">
+          <label for="config-fds-binary" data-i18n="configFdsBinaryLabel">FDS binary</label>
+          <input id="config-fds-binary" type="text" placeholder="/opt/fds/fds" />
+        </div>
+        <div class="field">
+          <label for="config-mpi-executable" data-i18n="configMpiExecutableLabel">MPI executable</label>
+          <input id="config-mpi-executable" type="text" placeholder="/usr/bin/mpirun" />
+        </div>
+        <div class="field">
+          <label for="config-default-mpi" data-i18n="configDefaultMpiLabel">Default MPI processes</label>
+          <input id="config-default-mpi" type="number" min="1" />
+        </div>
+        <div class="field">
+          <label for="config-temperature" data-i18n="configTemperatureLabel">Temperature readout</label>
+          <input id="config-temperature" type="checkbox" />
+        </div>
+        <div class="field">
+          <label for="config-discovery" data-i18n="configDiscoveryLabel">Network discovery</label>
+          <input id="config-discovery" type="checkbox" />
+        </div>
+        <div class="field">
+          <label for="config-max-upload" data-i18n="configMaxUploadLabel">Upload limit (MB)</label>
+          <input id="config-max-upload" type="number" min="1" />
+        </div>
+        <div class="field">
+          <label></label>
+          <button id="config-save-btn" class="secondary small" data-i18n="save">Save</button>
+          <span id="config-save-result" class="hint"></span>
         </div>
       </div>
       <div class="dialog-actions">

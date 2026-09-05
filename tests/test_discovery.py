@@ -1,5 +1,11 @@
 """LAN discovery: a real UDP broadcast round-trip on localhost, not mocked -- this is exactly
-the kind of thing that looks right in isolation but breaks on socket option/platform details."""
+the kind of thing that looks right in isolation but breaks on socket option/platform details.
+
+Every test monkeypatches DISCOVERY_PORT to a dedicated test-only port instead of the real
+57632 -- a "nothing responds" assertion would otherwise be genuinely flaky on any LAN where a
+real Controller (this project's own dev machine included, once a second machine joins as a
+compute node) happens to answer the broadcast for real.
+"""
 
 import threading
 import time
@@ -7,6 +13,13 @@ import time
 import pytest
 
 from fdsrouter.core import discovery
+
+_TEST_PORT = 57633
+
+
+@pytest.fixture(autouse=True)
+def isolated_discovery_port(monkeypatch):
+    monkeypatch.setattr(discovery, "DISCOVERY_PORT", _TEST_PORT)
 
 
 @pytest.fixture

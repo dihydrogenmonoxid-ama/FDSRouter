@@ -58,3 +58,14 @@ cluster_token: null
 # cluster_token. Only takes effect once host is not loopback-only (see above); has no effect on
 # a Controller bound to 127.0.0.1, since it wouldn't be reachable from another machine anyway.
 discovery_enabled: true
+
+# "controller" (serve the queue, own the database), "agent" (join another machine's Controller
+# as a compute node -- also needs controller_url below), or "auto" to decide interactively on
+# the very first `fdsrouter start` (only when run at a real terminal; unattended starts always
+# become a Controller). Once decided, `fdsrouter start` never asks again -- set this explicitly
+# to skip the question entirely, e.g. when scripting the rollout of several compute nodes.
+role: "auto"
+
+# Only used when role is "agent": which Controller to join. Left for the interactive pairing
+# step to fill in in the common case.
+controller_url: null

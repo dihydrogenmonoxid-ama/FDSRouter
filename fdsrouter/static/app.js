@@ -626,6 +626,7 @@ function closeSettingsModal() {
 function openOperationsModal() {
   loadServiceStatus();
   loadClusterInfo();
+  loadEditableConfig();
   el("operations-overlay").hidden = false;
 }
 
@@ -669,6 +670,45 @@ async function copyClusterToken() {
     button.textContent = t("copyLogFailed");
   }
   restore();
+}
+
+async function loadEditableConfig() {
+  el("config-save-result").textContent = "";
+  try {
+    const cfg = await apiGet("/api/service/config");
+    el("config-host").value = cfg.host || "";
+    el("config-port").value = cfg.port ?? "";
+    el("config-open-browser").checked = !!cfg.open_browser;
+    el("config-fds-binary").value = cfg.fds_binary || "";
+    el("config-mpi-executable").value = cfg.mpi_executable || "";
+    el("config-default-mpi").value = cfg.default_mpi_processes ?? "";
+    el("config-temperature").checked = !!cfg.temperature_enabled;
+    el("config-discovery").checked = !!cfg.discovery_enabled;
+    el("config-max-upload").value = cfg.max_upload_mb ?? "";
+  } catch (e) {
+    // best effort only -- the rest of the Operations dialog stays usable
+  }
+}
+
+async function saveEditableConfig() {
+  const resultEl = el("config-save-result");
+  resultEl.textContent = "…";
+  try {
+    const result = await apiSend("/api/service/config", "PUT", {
+      host: el("config-host").value.trim() || undefined,
+      port: el("config-port").value ? parseInt(el("config-port").value, 10) : undefined,
+      open_browser: el("config-open-browser").checked,
+      fds_binary: el("config-fds-binary").value.trim() || null,
+      mpi_executable: el("config-mpi-executable").value.trim() || null,
+      default_mpi_processes: el("config-default-mpi").value ? parseInt(el("config-default-mpi").value, 10) : undefined,
+      temperature_enabled: el("config-temperature").checked,
+      discovery_enabled: el("config-discovery").checked,
+      max_upload_mb: el("config-max-upload").value ? parseInt(el("config-max-upload").value, 10) : undefined,
+    });
+    resultEl.textContent = result.restart_required ? t("configSavedRestartNeeded") : t("configSavedApplied");
+  } catch (e) {
+    resultEl.textContent = t("settingsSaveFailed", { error: e.message });
+  }
 }
 
 function closeOperationsModal() {
@@ -2734,6 +2774,7 @@ el("logout-btn").addEventListener("click", logout);
 
 el("operations-btn").addEventListener("click", openOperationsModal);
 el("cluster-token-copy").addEventListener("click", copyClusterToken);
+el("config-save-btn").addEventListener("click", saveEditableConfig);
 el("operations-close").addEventListener("click", closeOperationsModal);
 el("operations-overlay").addEventListener("click", (ev) => {
   if (ev.target === el("operations-overlay")) closeOperationsModal();

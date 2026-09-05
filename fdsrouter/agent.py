@@ -5,9 +5,15 @@ design rationale for why polling rather than the Controller pushing), downloads 
 files, runs FDS locally by reusing the exact same core/job_runner.py the Controller itself uses,
 reports live metrics/log lines back, uploads the results, and reports the outcome.
 
-A separate config/CLI entrypoint from the Controller (`fdsrouter start`) on purpose, not a mode
-flag on the same one -- CLAUDE.md's "einfache Installation": one command per role, nothing to get
-wrong about which one a given config.yaml belongs to.
+Everything below is written against AgentConfig, but only ever touches attributes
+(controller_url, cluster_token, fds_binary, mpi_executable, mpi_command_template,
+default_mpi_processes, resolved_data_dir, project_dir) that fdsrouter.config.Config also has --
+so `fdsrouter start` (cli.py's _run_as_agent) passes a plain Config straight through when
+config.yaml's role is "agent", instead of converting it. That's deliberate duck typing, not an
+oversight: it's what lets a single `fdsrouter start` decide its own role via config.yaml (see
+cli.py) while `fdsrouter agent` below still exists as an explicit, dedicated entrypoint with its
+own agent-config.yaml for anyone who wants a machine to be unambiguously a compute node from the
+first command typed.
 """
 
 from __future__ import annotations

@@ -228,6 +228,14 @@ On the very first start, `config.yaml` is created in the current directory (temp
 `config.example.yaml`) and FDSRouter tries to locate `fds`/`mpirun` itself. The file is specific
 to your installation and is deliberately not version-controlled.
 
+The most common fields (`host`, `port`, `open_browser`, `fds_binary`, `mpi_executable`,
+`default_mpi_processes`, `temperature_enabled`, `discovery_enabled`, `max_upload_mb`) can also be
+edited directly in the interface under "Operations" → "Configuration", without opening the file
+by hand. Most changes apply to the next run immediately; `host`/`port` and network discovery need
+a service restart (button right next to it). `role`, `controller_url`, `data_dir`, `upload_dir`,
+`mpi_command_template`, `trusted_proxy_header` and `cluster_token` stay file-only on purpose —
+some are security-sensitive, others too consequential for a plain form field.
+
 | Key                     | Meaning                                                             |
 |-------------------------|---------------------------------------------------------------------|
 | `host`, `port`          | address the interface is served on                                  |
@@ -241,6 +249,9 @@ to your installation and is deliberately not version-controlled.
 | `max_upload_mb`         | size limit for a single upload, in MB                               |
 | `temperature_enabled`   | temperature readout on/off (usually empty on macOS without `sudo`)  |
 | `cluster_token`         | shared secret for compute nodes (`fdsrouter agent`), generated automatically — see [Cluster / multiple machines](#cluster--multiple-machines) |
+| `discovery_enabled`     | answer an agent's network search (only effective once `host` isn't `127.0.0.1`) |
+| `role`                  | `controller`, `agent`, or `auto` (decided interactively only on the very first `fdsrouter start`) |
+| `controller_url`        | only with `role: agent` -- which Controller this machine joins                |
 
 Energy and Home Assistant settings change during operation and are therefore edited in the
 interface's settings dialog rather than in `config.yaml`.
@@ -331,30 +342,40 @@ Prerequisite: the Controller must actually be reachable on the network (`host: "
 [Running it on the network](#running-it-on-the-network)) — otherwise a compute node may still
 *find* it via discovery but won't be able to actually connect.
 
-On each additional machine:
+There's only **one** command, on every machine: `fdsrouter start`. On a fresh machine, run
+interactively at a real terminal, the first start looks for an already-running Controller on the
+local network automatically (a UDP broadcast, no IP to type in):
 
 ```bash
 git clone https://github.com/dihydrogenmonoxid-ama/FDSRouter.git
 cd FDSRouter
 python3 -m venv .venv && .venv/bin/pip install -e .
-mkdir compute-node && cd compute-node
-../.venv/bin/fdsrouter agent
+mkdir second-machine && cd second-machine
+../.venv/bin/fdsrouter start
 ```
 
-The first start looks for the Controller on the local network automatically (a UDP broadcast, no
-IP to type in) and lists every Controller it finds to choose from; if none answer, it asks for
-the address instead. Then it just asks for the **cluster token** — shown on the Controller under
-"Operations" → "Cluster" (with a copy button). The token is verified against the Controller
-immediately, so a typo is caught right there instead of three retries into a background poll
-loop nobody is watching. Once paired, `agent-config.yaml` is written and every later start
-connects directly without asking again. If the Controller isn't on the same network segment, or
-`discovery_enabled: false` turns discovery off there, the address can still be given manually:
+- If it finds one, it asks: join this machine as a compute node? Say yes and it just asks for the
+  **cluster token** (shown on the Controller under "Operations" → "Cluster", with a copy button)
+  — verified against the Controller immediately, so a typo is caught right there instead of three
+  retries into a background poll loop nobody is watching.
+- If it finds none (or you decline / choose to run your own Controller), the machine simply
+  starts as a Controller, same as always.
+- Running unattended (a script, systemd, no terminal) never asks — it always becomes a Controller,
+  exactly like before this existed.
+
+The decision is written into `config.yaml` (`role: controller` or `role: agent`) and never asked
+again on later starts; `role` can also be set there directly to skip the question entirely (handy
+for scripting many identical compute nodes). If the Controller isn't on the same network segment,
+or `discovery_enabled: false` turns discovery off there, the explicit path with a manual address
+still works:
 
 ```bash
 ../.venv/bin/fdsrouter agent --controller-url http://<controller-ip>:8000
 ```
 
-To redo the setup against a different Controller, `fdsrouter agent --pair` runs it again.
+(`fdsrouter agent` writes its own `agent-config.yaml` and suits a machine meant to be
+unambiguously a compute node from the first command typed, e.g. scripted rollout of many
+identical nodes. `fdsrouter agent --pair` redoes the setup against a different Controller.)
 
 Once connected, the node shows up in the interface under "Nodes" (listing every known machine
 with its status, cores/RAM and current job — including the Controller itself). Case files travel
